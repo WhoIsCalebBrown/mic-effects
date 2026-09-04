@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "id": "caleb.mic-effects",
+  "name": "Microphone Effects",
+  "version": "0.1.0",
+  "author": "caleb",
+  "license": "MIT",
+  "description": "The microphone half of Camera Effects as its own bar button: level meters, mute, and a reorderable channel strip (noise reduction, gate, compressor, de-esser, filters, parametric EQ, pitch and formant, voice effects, reverb) driving the same camera-effects-server daemon.",
+  "kinds": ["service", "bar-widget"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "plugin/Service.qml",
+    "barWidget": "plugin/Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Microphone Effects",
+    "description": "Microphone channel strip with level meters; the icon shows muted or live at a glance and left-click opens the panel.",
+    "category": "Media",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": { "alwaysShow": true },
+    "schema": [
+      {
+        "key": "alwaysShow",
+        "type": "boolean",
+        "label": "Show icon even when no app is using the microphone",
+        "defaultValue": true
+      }
+    ]
+  }
+}
