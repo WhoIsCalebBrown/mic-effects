@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "caleb.mic-effects",
+  "id": "whoiscalebbrown.mic-effects",
   "name": "Microphone Effects",
-  "version": "0.1.0",
-  "author": "caleb",
+  "version": "1.0.0",
+  "author": "WhoIsCalebBrown",
   "license": "MIT",
-  "description": "The microphone half of Camera Effects as its own bar button: level meters, mute, and a reorderable channel strip (noise reduction, gate, compressor, de-esser, filters, parametric EQ, pitch and formant, voice effects, reverb) driving the same camera-effects-server daemon.",
+  "description": "A standalone system-wide virtual microphone and console-style effects rack: noise reduction, dynamics, parametric EQ, pitch correction, voice effects, delays, and reverb.",
   "kinds": ["service", "bar-widget"],
   "keepLoaded": true,
   "entryPoints": {

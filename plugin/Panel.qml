@@ -6,7 +6,7 @@ import qs.Commons
 import qs.Ui
 import "Presets.js" as Presets
 
-// Bar icon + popup for the microphone half of Camera Effects, drawn as a rack
+// Bar icon + popup for Microphone Effects, drawn as a rack
 // of console units rather than a settings list.
 //
 // The shape of it: the source, the meters and mute/monitor/level are pinned at
@@ -16,10 +16,10 @@ import "Presets.js" as Presets
 // their forty-odd controls therefore cost the height of one stage, not ten.
 Panel {
   id: root
-  moduleName: "caleb.mic-effects"
-  ipcTarget: "caleb.mic-effects"
+  moduleName: "whoiscalebbrown.mic-effects"
+  ipcTarget: "whoiscalebbrown.mic-effects"
 
-  readonly property var svc: bar && bar.shell ? bar.shell.serviceFor("caleb.mic-effects") : null
+  readonly property var svc: bar && bar.shell ? bar.shell.serviceFor("whoiscalebbrown.mic-effects") : null
   readonly property var m: svc ? svc.settings : ({})
   readonly property bool connected: svc ? svc.connected : false
   readonly property bool muted: svc ? svc.muted : false
@@ -1248,7 +1248,8 @@ Panel {
     active: root.muted || root.live
     useActiveColor: true
     activeColor: root.muted ? Color.urgent : root.fg
-    tooltipText: (root.muted ? "Microphone muted"
+    tooltipText: (!root.connected && root.svc && root.svc.setupError ? root.svc.setupError
+                : root.muted ? "Microphone muted"
                 : root.live ? "Microphone in use"
                             : "Microphone effects") + " · right-click: mute"
     onPressed: function(b) {
@@ -1315,7 +1316,8 @@ Panel {
               Text {
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                text: root.svc && root.svc.source && root.svc.source.description
+                text: !root.connected ? (root.svc && root.svc.setupError ? "BUILD FAILED" : "STARTING")
+                      : root.svc && root.svc.source && root.svc.source.description
                       ? String(root.svc.source.description).slice(0, 22) : "—"
                 color: root.dim
                 font.family: root.fontFamily

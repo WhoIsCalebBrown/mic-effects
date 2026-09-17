@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build and lint dependencies
+        run: sudo apt-get update && sudo apt-get install -y g++ make pkg-config libpipewire-0.3-dev jq shellcheck
+      - name: Validate manifest structure
+        run: |
+          jq -e '
+            .schemaVersion == 1 and
+            (.id | test("^[a-z0-9]+([._-][a-z0-9]+)*$")) and
+            (.kinds | index("service")) and
+            (.kinds | index("bar-widget")) and
+            (.entryPoints.service | type == "string") and
+            (.entryPoints.barWidget | type == "string")
+          ' manifest.json
+          test -f "$(jq -r .entryPoints.service manifest.json)"
+          test -f "$(jq -r .entryPoints.barWidget manifest.json)"
+      - name: Check shell scripts
+        run: shellcheck install.sh scripts/mic-effects-hide
+      - name: Build daemon
+        run: |
+          make -C daemon clean
+          make -C daemon all -j2
