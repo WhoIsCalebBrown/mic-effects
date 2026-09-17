@@ -7,6 +7,8 @@ other PipeWire application, then shape the sound from the bar.
 Everything runs locally on the CPU. The plugin does not access the network,
 and unlike a virtual-camera plugin it needs no root setup.
 
+![Microphone Effects console rack](preview.png)
+
 ## Features
 
 - Input/output meters, mute, monitor, input selection, and output naming
@@ -38,6 +40,20 @@ The runtime depends on `pipewire`; building requires `gcc`, `make`, and
 When installed on a machine that previously used the microphone built into
 Camera Effects, the installer imports that microphone configuration once and
 leaves the original file untouched.
+
+## Remove
+
+Remove the unprivileged runtime first, then let Omarchy remove the plugin:
+
+```bash
+cd ~/.config/omarchy/plugins/whoiscalebbrown.mic-effects
+./install.sh --uninstall
+omarchy plugin remove whoiscalebbrown.mic-effects
+```
+
+The uninstall keeps `~/.config/mic-effects/config.json` so reinstalling does
+not discard your presets. Delete that file separately if you also want to
+remove the saved settings.
 
 ## Use
 
