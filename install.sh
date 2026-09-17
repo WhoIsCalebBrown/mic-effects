@@ -10,7 +10,9 @@ CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/mic-effects
 MODE=${1:-}
 
 if [[ $MODE == --uninstall ]]; then
-  [[ -x $LIB/mic-effects-hide ]] && "$LIB/mic-effects-hide" none >/dev/null 2>&1 || true
+  if [[ -x $LIB/mic-effects-hide ]]; then
+    "$LIB/mic-effects-hide" none >/dev/null 2>&1 || true
+  fi
   rm -f "$BIN/mic-effects-server"
   rm -rf "$LIB" "$DATA" "$CACHE"
   echo "Removed the runtime. Plugin settings remain in ~/.config/mic-effects/."

@@ -154,7 +154,7 @@ if command -v pactl >/dev/null; then
     old=$(pactl get-default-source 2>/dev/null || true)
     [[ -n $old && $old != "$NODE" && ! -f $PREV ]] && { mkdir -p "$DATA"; printf '%s\n' "$old" > "$PREV"; }
     for _ in 1 2 3 4 5 6; do
-      if pactl list short sources 2>/dev/null | grep -q "[[:space:]]$NODE[[:space:]]"; then
+      if pactl list short sources 2>/dev/null | grep -q "[[:space:]]${NODE}[[:space:]]"; then
         pactl set-default-source "$NODE" >/dev/null 2>&1 || true
         break
       fi
@@ -164,7 +164,7 @@ if command -v pactl >/dev/null; then
     old=$(cat "$PREV")
     # Only if it is still there; otherwise leave the choice to WirePlumber.
     # The note is kept until the restore has actually been attempted.
-    if [[ -n $old ]] && pactl list short sources 2>/dev/null | grep -q "^[0-9]*[[:space:]]*$old[[:space:]]"; then
+    if [[ -n $old ]] && pactl list short sources 2>/dev/null | grep -q "^[0-9]*[[:space:]]*${old}[[:space:]]"; then
       pactl set-default-source "$old" >/dev/null 2>&1 || true
     fi
     rm -f "$PREV"
