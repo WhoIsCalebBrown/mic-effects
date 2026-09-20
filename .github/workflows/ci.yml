@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - name: Install build and lint dependencies
-        run: sudo apt-get update && sudo apt-get install -y g++ make pkg-config libpipewire-0.3-dev jq shellcheck qt6-declarative-dev-tools qml6-module-qtquick qml6-module-qtqml-workerscript qml6-module-qttest
+        run: sudo apt-get update && sudo apt-get install -y g++ make pkg-config libpipewire-0.3-dev jq shellcheck qt6-declarative-dev-tools qml6-module-qtquick qml6-module-qtquick-window qml6-module-qtqml-workerscript qml6-module-qttest
       - name: Validate manifest structure
         run: |
           jq -e '
