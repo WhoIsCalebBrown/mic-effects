@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - name: Install build and lint dependencies
-        run: sudo apt-get update && sudo apt-get install -y g++ make pkg-config libpipewire-0.3-dev jq shellcheck
+        run: sudo apt-get update && sudo apt-get install -y g++ make pkg-config libpipewire-0.3-dev jq shellcheck qt6-declarative-dev-tools qml6-module-qtquick qml6-module-qtquick-window qml6-module-qtqml-workerscript qml6-module-qttest
       - name: Validate manifest structure
         run: |
           jq -e '
@@ -28,6 +28,13 @@ jobs:
           test -f "$(jq -r .entryPoints.barWidget manifest.json)"
       - name: Check shell scripts
         run: shellcheck install.sh scripts/mic-effects-hide
+      - name: Test QML text safety
+        run: |
+          if grep -nE '(^|[[:space:]])Text[[:space:]]*\{' plugin/Panel.qml; then
+            echo "Panel text must use SafeText" >&2
+            exit 1
+          fi
+          QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input tests -import plugin -o -,txt
       - name: Build daemon
         run: |
           make -C daemon clean

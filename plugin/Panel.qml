@@ -174,7 +174,7 @@ Panel {
   }
 
   // Engraved caps: the label style the whole rack is titled in.
-  component Eng: Text {
+  component Eng: SafeText {
     property real tracking: 0.2
     color: root.eng
     font.family: root.fontFamily
@@ -462,7 +462,7 @@ Panel {
       anchors.topMargin: Style.space(1)
       anchors.horizontalCenter: parent.horizontalCenter
       width: Math.max(kb.width, Style.space(54)); height: Style.font.caption + Style.space(4)
-      Text {
+      SafeText {
         anchors.centerIn: parent
         visible: !kbEdit.activeFocus
         text: kb.readout
@@ -534,7 +534,7 @@ Panel {
       anchors.rightMargin: Style.space(8)
       anchors.verticalCenter: parent.verticalCenter
       width: Style.space(52); height: Style.font.caption + Style.space(4)
-      Text { anchors.centerIn: parent; visible: !fdEdit.activeFocus; text: fd.readout; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+      SafeText { anchors.centerIn: parent; visible: !fdEdit.activeFocus; text: fd.readout; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
       MouseArea { anchors.fill: parent; visible: !fdEdit.activeFocus; cursorShape: Qt.IBeamCursor; onClicked: fd.openInput() }
       TextInput {
         id: fdEdit
@@ -1313,7 +1313,7 @@ Panel {
               Eng { anchors.left: srcLed.right; anchors.leftMargin: Style.space(8)
                     anchors.verticalCenter: parent.verticalCenter
                     text: root.svc ? root.svc.outputLabel : "Microphone Effects"; tracking: 0.24; color: root.fg }
-              Text {
+              SafeText {
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 text: !root.connected ? (root.svc && root.svc.setupError ? "BUILD FAILED" : "STARTING")
@@ -1344,7 +1344,7 @@ Panel {
                 textRole: "label"
                 currentIndex: root.inputOptionIndex()
                 onActivated: function(index) { if (root.svc) root.svc.selectSource(String(root.inputOptions[index].value)) }
-                contentItem: Text {
+                contentItem: SafeText {
                   leftPadding: Style.space(7)
                   rightPadding: Style.space(20)
                   verticalAlignment: Text.AlignVCenter
@@ -1354,7 +1354,7 @@ Panel {
                   font.pixelSize: Style.font.body
                   elide: Text.ElideRight
                 }
-                indicator: Text {
+                indicator: SafeText {
                   x: inputPick.width - width - Style.space(7)
                   anchors.verticalCenter: parent.verticalCenter
                   text: "⌄"
@@ -1371,7 +1371,7 @@ Panel {
                   required property var modelData
                   width: inputPick.width
                   height: root.rowH
-                  contentItem: Text {
+                  contentItem: SafeText {
                     leftPadding: Style.space(7)
                     verticalAlignment: Text.AlignVCenter
                     text: modelData.label
