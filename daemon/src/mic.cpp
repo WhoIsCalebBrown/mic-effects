@@ -57,7 +57,7 @@ void fft(float* re, float* im, int n, bool inverse) {
 const std::vector<std::string>& MicSettings::stageNames() {
   // Index-aligned with enum MicStage.
   static const std::vector<std::string> v{ "hpf", "hum", "nr", "gate", "comp",
-                                           "deess", "eq", "pitch", "fx", "verb" };
+                                           "deess", "eq", "pitch", "fx", "verb", "limit" };
   return v;
 }
 const std::vector<std::string>& MicSettings::eqTypeNames() {
@@ -854,6 +854,9 @@ void MicProcessor::reset() {
   gateEnv_ = 0; gateGain_ = 0; compEnv_ = 0; compGain_ = 1; glueEnv_ = 0; glueGain_ = 1;
   essHi_ = 0; essAll_ = 0; essGain_ = 1;
   ringPhase_ = 0;
+  limiterGain_ = 1;
+  limiterBoostNow_ = s_.limiter ? dbToLin(std::clamp(s_.limiterBoost, 0.f, 1.f) * 18.f) : 1.f;
+  limiterMix_ = s_.limiter ? 1.f : 0.f;
   gainPrimed_ = false;   // re-prime the glide rather than sweep up from wherever it was
   inHold_ = outHold_ = 0;
   inLevel_ = 0; outLevel_ = 0;
@@ -935,14 +938,22 @@ void MicProcessor::rebuild() {
     // would spend most of its travel in times too slow to hear apart, and cross
     // the whole musically interesting range in the last few percent.
     tuneTau_ = 0.20f * std::pow(0.01f, std::clamp(s_.autoTuneSpeed, 0.f, 1.f));
-    const int root = keyIndex(s_.autoTuneKey);
     for (int i = 0; i < 12; i++) tuneMask_[i] = false;
-    for (int step : scaleSteps(s_.autoTuneScale)) tuneMask_[(root + step) % 12] = true;
+    if (!s_.autoTuneNotes.empty()) {
+      for (const std::string& note : s_.autoTuneNotes) tuneMask_[keyIndex(note)] = true;
+    } else {
+      const int root = keyIndex(s_.autoTuneKey);
+      for (int step : scaleSteps(s_.autoTuneScale)) tuneMask_[(root + step) % 12] = true;
+    }
   }
 
   essLp_.lowPass(r, 5500.f, 0.707f);   // de-esser split: everything above this is "s"
 
   outGain_ = dbToLin((std::clamp(s_.volume, 0.f, 1.f) - 0.5f) * 36.f);
+  limiterBoostGain_ = dbToLin(std::clamp(s_.limiterBoost, 0.f, 1.f) * 18.f);
+  limiterCeilingGain_ = dbToLin(mixf(-12.f, 0.f, std::clamp(s_.limiterCeiling, 0.f, 1.f)));
+  limiterReleaseCoef_ = coefMs(r, mixf(20.f, 300.f, std::clamp(s_.limiterRelease, 0.f, 1.f)));
+  limiterTransitionCoef_ = coefMs(r, 15.f);
   // Volume and the voice trim are applied per sample at the output. Jumping
   // either between blocks steps the waveform — classic zipper noise, measured at
   // 25x the steady-state step while dragging the volume slider. Glide instead.
@@ -1007,6 +1018,7 @@ void MicProcessor::process(float* x, int n) {
     inPeak = std::max(inPeak, std::fabs(x[i]));
   }
 
+  bool outputGainApplied = false;
   if (s_.enabled) {
 // Stages run in whatever order the chain is in. Each body below is the same
     // code it was when the order was fixed; only the sequencing moved, so a
@@ -1055,8 +1067,9 @@ void MicProcessor::process(float* x, int n) {
       case StComp: {
         if (s_.autoLevel) {
           captureDry();   // parallel compression: the dry side comes back below
-          const float t = std::clamp(s_.autoLevelIntensity, 0.f, 1.f);
-          const float thrDb = mixf(-14.f, -32.f, t), ratio = mixf(2.f, 6.f, t);
+          const float threshold = std::clamp(s_.autoLevelThreshold, 0.f, 1.f);
+          const float ratioControl = std::clamp(s_.autoLevelRatio, 0.f, 1.f);
+          const float thrDb = mixf(-14.f, -32.f, threshold), ratio = mixf(2.f, 6.f, ratioControl);
           const float makeup = dbToLin(-thrDb * (1.f - 1.f / ratio) * 0.85f);
           const float att = coefMs((float)rate_, 6.f), rel = coefMs((float)rate_, 140.f);
           const float makeupDb = linToDb(makeup);
@@ -1151,7 +1164,11 @@ void MicProcessor::process(float* x, int n) {
             const float f = (float)rate_ / tunePeriod_;
             // ^amount travels that fraction of the distance to the note; the clamp is
             // the seatbelt for the octave error the detector will make eventually.
-            want = std::clamp(std::pow(snapHz(f) / f, tuneAmount_), 0.891f, 1.122f);
+            // A normal scale is never far away, but a one-note latch can need
+            // up to half an octave to reach the nearest copy of that pitch
+            // class. Keep the octave-error seatbelt while allowing that full
+            // musically necessary range.
+            want = std::clamp(std::pow(snapHz(f) / f, tuneAmount_), semis(-6.f), semis(6.f));
           }
           // Glide once per block, so the correction slides into the note — and back
           // to 1 through an unvoiced consonant — instead of stepping.
@@ -1223,6 +1240,38 @@ void MicProcessor::process(float* x, int n) {
         }
         break;
       }
+      case StLimit: {
+        const bool finalInsert = k == orderN_ - 1;
+        const float targetMix = s_.limiter ? 1.f : 0.f;
+        const float targetBoost = s_.limiter ? limiterBoostGain_ : 1.f;
+        // Run through bypass transitions too. The short glide prevents both the
+        // boost control and Engage from stepping the waveform in the middle of
+        // a sample. If this is the last insert, feed output Volume into it so
+        // Ceiling describes the real output rather than a point before Volume.
+        for (int i = 0; i < n; i++) {
+          limiterMix_ += limiterTransitionCoef_ * (targetMix - limiterMix_);
+          limiterBoostNow_ += limiterTransitionCoef_ * (targetBoost - limiterBoostNow_);
+          float dry = x[i];
+          if (finalInsert) {
+            gainNow_ += gainCoef_ * (outGain_ * outTrim_ - gainNow_);
+            dry *= gainNow_;
+          }
+          const float boosted = dry * limiterBoostNow_;
+          const float a = std::fabs(boosted);
+          const float want = a > limiterCeilingGain_ ? limiterCeilingGain_ / a : 1.f;
+          if (want < limiterGain_) limiterGain_ = want;
+          else limiterGain_ += limiterReleaseCoef_ * (want - limiterGain_);
+          float limited = mixf(dry, boosted * limiterGain_, limiterMix_);
+          // Below the ceiling, the bypass crossfade remains click-free. Above
+          // it, Engage must mean Engage immediately: do not let the dry side of
+          // that short transition leak a peak past the user's explicit cap.
+          if (s_.limiter && std::fabs(limited) > limiterCeilingGain_)
+            limited = std::copysign(limiterCeilingGain_, limited);
+          x[i] = limited;
+        }
+        outputGainApplied = finalInsert;
+        break;
+      }
       }
     }
   }
@@ -1231,8 +1280,11 @@ void MicProcessor::process(float* x, int n) {
   for (int i = 0; i < n; i++) {
     // Volume is the microphone's own gain, not an effect: it applies even with
     // the master switch off (that is the only knob left in that case).
-    gainNow_ += gainCoef_ * (outGain_ * outTrim_ - gainNow_);
-    float y = x[i] * gainNow_;
+    float y = x[i];
+    if (!outputGainApplied) {
+      gainNow_ += gainCoef_ * (outGain_ * outTrim_ - gainNow_);
+      y *= gainNow_;
+    }
     // Gentle soft limiter so an effect (or the makeup gain) can never clip hard.
     float a = std::fabs(y);
     if (a > 0.8f) y = std::copysign(0.8f + 0.2f * std::tanh((a - 0.8f) / 0.2f), y);

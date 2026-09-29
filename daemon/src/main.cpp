@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -98,9 +99,13 @@ json settingsToJson(const MicSettings& s) {
   return {{"enabled", s.enabled}, {"voiceIsolation", s.voiceIsolation}, {"voiceIsolationIntensity", s.voiceIsolationIntensity},
           {"noiseGate", s.noiseGate}, {"noiseGateIntensity", s.noiseGateIntensity},
           {"autoLevel", s.autoLevel}, {"autoLevelIntensity", s.autoLevelIntensity},
+          {"autoLevelRatio", s.autoLevelRatio}, {"autoLevelThreshold", s.autoLevelThreshold},
           {"glueComp", s.glueComp}, {"glueCompIntensity", s.glueCompIntensity},
           {"deEsser", s.deEsser}, {"deEsserIntensity", s.deEsserIntensity},
-          {"humFilter", s.humFilter}, {"highPass", s.highPass}, {"volume", s.volume},
+          {"humFilter", s.humFilter}, {"highPass", s.highPass},
+          {"limiter", s.limiter}, {"limiterBoost", s.limiterBoost},
+          {"limiterCeiling", s.limiterCeiling}, {"limiterRelease", s.limiterRelease},
+          {"volume", s.volume},
           {"eq", eqToJson(s.eq)}, {"chain", s.chain}, {"voice", s.voice}, {"space", s.space},
           {"tape", s.tape}, {"ringMod", s.ringMod}, {"megaphone", s.megaphone},
           {"tapeMix", s.tapeMix}, {"ringModMix", s.ringModMix}, {"megaphoneMix", s.megaphoneMix},
@@ -113,7 +118,8 @@ json settingsToJson(const MicSettings& s) {
           {"spacePreDelay", s.spacePreDelay}, {"spaceMod", s.spaceMod}, {"spaceDiffusion", s.spaceDiffusion},
           {"spaceLowCut", s.spaceLowCut}, {"spaceModRate", s.spaceModRate}, {"spaceModDepth", s.spaceModDepth},
           {"autoTune", s.autoTune}, {"autoTuneSpeed", s.autoTuneSpeed}, {"autoTuneAmount", s.autoTuneAmount},
-          {"autoTuneKey", s.autoTuneKey}, {"autoTuneScale", s.autoTuneScale}};
+          {"autoTuneKey", s.autoTuneKey}, {"autoTuneScale", s.autoTuneScale},
+          {"autoTuneNotes", s.autoTuneNotes}};
 }
 
 void settingsFromJson(const json& value, MicSettings& s) {
@@ -137,10 +143,23 @@ void settingsFromJson(const json& value, MicSettings& s) {
   boolean("enabled", s.enabled);
   boolean("voiceIsolation", s.voiceIsolation); unit("voiceIsolationIntensity", s.voiceIsolationIntensity);
   boolean("noiseGate", s.noiseGate); unit("noiseGateIntensity", s.noiseGateIntensity);
-  boolean("autoLevel", s.autoLevel); unit("autoLevelIntensity", s.autoLevelIntensity);
+  boolean("autoLevel", s.autoLevel);
+  const bool hadLegacyAutoLevel = value.contains("autoLevelIntensity");
+  const bool hadAutoLevelRatio = value.contains("autoLevelRatio");
+  const bool hadAutoLevelThreshold = value.contains("autoLevelThreshold");
+  unit("autoLevelIntensity", s.autoLevelIntensity);
+  unit("autoLevelRatio", s.autoLevelRatio);
+  unit("autoLevelThreshold", s.autoLevelThreshold);
+  // Old configs and clients used one value for both knobs. Preserve their
+  // sound until either of the new independent controls is explicitly set.
+  if (hadLegacyAutoLevel && !hadAutoLevelRatio) s.autoLevelRatio = s.autoLevelIntensity;
+  if (hadLegacyAutoLevel && !hadAutoLevelThreshold) s.autoLevelThreshold = s.autoLevelIntensity;
   boolean("glueComp", s.glueComp); unit("glueCompIntensity", s.glueCompIntensity);
   boolean("deEsser", s.deEsser); unit("deEsserIntensity", s.deEsserIntensity);
-  boolean("highPass", s.highPass); boolean("humFilter", s.humFilter); unit("volume", s.volume);
+  boolean("highPass", s.highPass); boolean("humFilter", s.humFilter);
+  boolean("limiter", s.limiter); unit("limiterBoost", s.limiterBoost);
+  unit("limiterCeiling", s.limiterCeiling); unit("limiterRelease", s.limiterRelease);
+  unit("volume", s.volume);
   string("voice", s.voice); string("space", s.space);
   if (value.contains("eq")) eqFromJson(value["eq"], s.eq);
   if (value.contains("chain") && value["chain"].is_array()) {
@@ -170,6 +189,17 @@ void settingsFromJson(const json& value, MicSettings& s) {
   if (!hadModDepth && value.contains("spaceMod")) s.spaceModDepth = s.spaceMod;
   boolean("autoTune", s.autoTune); unit("autoTuneSpeed", s.autoTuneSpeed); unit("autoTuneAmount", s.autoTuneAmount);
   string("autoTuneKey", s.autoTuneKey); string("autoTuneScale", s.autoTuneScale);
+  if (value.contains("autoTuneNotes") && value["autoTuneNotes"].is_array()) {
+    std::vector<std::string> notes;
+    const auto& choices = MicSettings::keyNames();
+    for (const auto& item : value["autoTuneNotes"]) {
+      if (!item.is_string()) continue;
+      std::string note = item;
+      if (std::find(choices.begin(), choices.end(), note) != choices.end() &&
+          std::find(notes.begin(), notes.end(), note) == notes.end()) notes.push_back(note);
+    }
+    s.autoTuneNotes = std::move(notes);
+  }
 
   auto oneOf = [](const std::vector<std::string>& choices, std::string& target, const char* fallback) {
     if (std::find(choices.begin(), choices.end(), target) == choices.end()) target = fallback;
@@ -223,7 +253,42 @@ struct Config {
   bool sameForAll = true;
   MicSettings settings;
   std::map<std::string, MicSettings> settingsBySource;
+  struct UserPreset {
+    std::string name;
+    MicSettings settings;
+  };
+  // This deliberately includes overrides for the built-in panel preset keys.
+  // The daemon does not own that built-in list: the UI decides how to merge it.
+  std::map<std::string, UserPreset> userPresets;
 };
+
+bool validPresetKey(const std::string& key) {
+  if (key.empty() || key.size() > 48) return false;
+  for (unsigned char c : key)
+    if (!(std::islower(c) || std::isdigit(c) || c == '_' || c == '-')) return false;
+  return true;
+}
+
+bool validPresetName(const std::string& name) {
+  // The panel limits names to 40 UTF-16 units. Four UTF-8 bytes per unit is
+  // the safe upper bound, so non-ASCII names accepted by the UI stay valid.
+  if (name.empty() || name.size() > 160) return false;
+  for (unsigned char c : name)
+    if (c < 0x20 || c == 0x7f) return false;
+  return true;
+}
+
+void loadUserPreset(const std::string& key, const json& value, Config& config) {
+  if (!validPresetKey(key) || !value.is_object() || !value.contains("name") ||
+      !value["name"].is_string() || !validPresetName(value["name"].get<std::string>()) ||
+      !value.contains("settings") || !value["settings"].is_object()) return;
+  Config::UserPreset preset;
+  preset.name = value["name"].get<std::string>();
+  // Start from defaults so a malformed/old saved preset cannot inherit the
+  // current microphone configuration. settingsFromJson clamps every field.
+  settingsFromJson(value["settings"], preset.settings);
+  config.userPresets[key] = std::move(preset);
+}
 
 void loadConfig(Config& config) {
   std::ifstream input(config.path);
@@ -243,6 +308,17 @@ void loadConfig(Config& config) {
         settingsFromJson(item, settings);
         config.settingsBySource[name] = settings;
       }
+    if (value.contains("userPresets")) {
+      const json& presets = value["userPresets"];
+      if (presets.is_array()) {
+        for (const auto& preset : presets) {
+          if (!preset.is_object() || !preset.contains("key") || !preset["key"].is_string()) continue;
+          loadUserPreset(preset["key"].get<std::string>(), preset, config);
+        }
+      } else if (presets.is_object()) { // Accept an early map-shaped config too.
+        for (auto& [key, preset] : presets.items()) loadUserPreset(key, preset, config);
+      }
+    }
   } catch (const std::exception& e) {
     fprintf(stderr, "mic-effects-server: config: %s\n", e.what());
   }
@@ -251,9 +327,13 @@ void loadConfig(Config& config) {
 void saveConfig(const Config& config) {
   json bySource = json::object();
   for (const auto& [name, settings] : config.settingsBySource) bySource[name] = settingsToJson(settings);
+  json presets = json::array();
+  for (const auto& [key, preset] : config.userPresets)
+    presets.push_back({{"key", key}, {"name", preset.name}, {"settings", settingsToJson(preset.settings)}});
   json value = {{"label", config.label}, {"source", config.source}, {"resolved", config.resolved},
                 {"muted", config.muted}, {"listen", config.listen}, {"sameForAll", config.sameForAll},
-                {"settings", settingsToJson(config.settings)}, {"settingsBySource", bySource}};
+                {"settings", settingsToJson(config.settings)}, {"settingsBySource", bySource},
+                {"userPresets", presets}};
   std::string directory = config.path.substr(0, config.path.rfind('/'));
   std::error_code directoryError;
   std::filesystem::create_directories(directory, directoryError);
@@ -357,6 +437,9 @@ class Daemon {
     for (const auto& source : audio_.sources())
       sources.push_back({{"name", source.name}, {"description", source.description}, {"bluetooth", source.bluetooth}, {"hidden", hidden(source.name)}});
     MicSourceInfo source = audio_.currentSource();
+    json userPresets = json::array();
+    for (const auto& [key, preset] : config_.userPresets)
+      userPresets.push_back({{"key", key}, {"name", preset.name}, {"settings", settingsToJson(preset.settings)}});
     json mic = {{"label", config_.label}, {"node", AudioEngine::kNodeName},
                 {"source", {{"name", source.name}, {"description", source.description}, {"bluetooth", source.bluetooth}}},
                 {"sources", sources}, {"wanted", config_.source}, {"status", status_},
@@ -366,7 +449,8 @@ class Daemon {
                 {"hideAll", hidden_.all}, {"sameForAll", config_.sameForAll},
                 {"settings", settingsToJson(effectiveSettings())}, {"eqTypes", MicSettings::eqTypeNames()},
                 {"stages", MicSettings::stageNames()}, {"voices", MicSettings::voiceNames()},
-                {"spaces", MicSettings::spaceNames()}, {"tuneKeys", MicSettings::keyNames()}, {"tuneScales", MicSettings::scaleNames()}};
+                {"spaces", MicSettings::spaceNames()}, {"tuneKeys", MicSettings::keyNames()},
+                {"tuneScales", MicSettings::scaleNames()}, {"userPresets", userPresets}};
     return {{"type", "state"}, {"mic", mic}};
   }
 
@@ -400,6 +484,42 @@ class Daemon {
     if (command == "micreset") {
       effectiveSettings(true) = MicSettings();
       pushSettings();
+      saveConfig(config_);
+      dirty_ = true;
+      return ok;
+    }
+    if (command == "presetSave") {
+      if (!value.contains("key") || !value["key"].is_string() || !validPresetKey(value["key"].get<std::string>()))
+        return failure("invalid preset key");
+      if (!value.contains("name") || !value["name"].is_string() || !validPresetName(value["name"].get<std::string>()))
+        return failure("invalid preset name");
+      Config::UserPreset preset;
+      preset.name = value["name"].get<std::string>();
+      // Commands on a client's socket are ordered. Snapshotting here means a
+      // knob move immediately followed by Save includes that move even before
+      // the panel receives the daemon's next state broadcast.
+      preset.settings = effectiveSettings();
+      config_.userPresets[value["key"].get<std::string>()] = std::move(preset);
+      saveConfig(config_);
+      dirty_ = true;
+      return ok;
+    }
+    if (command == "presetRename") {
+      if (!value.contains("key") || !value["key"].is_string() || !validPresetKey(value["key"].get<std::string>()))
+        return failure("invalid preset key");
+      if (!value.contains("name") || !value["name"].is_string() || !validPresetName(value["name"].get<std::string>()))
+        return failure("invalid preset name");
+      auto found = config_.userPresets.find(value["key"].get<std::string>());
+      if (found == config_.userPresets.end()) return failure("preset not found");
+      found->second.name = value["name"].get<std::string>();
+      saveConfig(config_);
+      dirty_ = true;
+      return ok;
+    }
+    if (command == "presetDelete") {
+      if (!value.contains("key") || !value["key"].is_string() || !validPresetKey(value["key"].get<std::string>()))
+        return failure("invalid preset key");
+      if (!config_.userPresets.erase(value["key"].get<std::string>())) return failure("preset not found");
       saveConfig(config_);
       dirty_ = true;
       return ok;

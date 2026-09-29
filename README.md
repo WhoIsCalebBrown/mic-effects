@@ -14,10 +14,10 @@ and unlike a virtual-camera plugin it needs no root setup.
 - Input/output meters, mute, monitor, input selection, and output naming
 - Reorderable high-pass, hum removal, noise reduction, gate, compressor,
   de-esser, parametric EQ, pitch, voice-FX, and reverb stages
-- Auto-tune with key, scale, speed, and amount controls
+- Auto-tune with a clickable piano, key/scale guidance, speed, amount, and custom note latching
 - Pitch and formant shifting, doubler, tape, ring modulation, and megaphone
 - Room, hall, cathedral, echo, and underwater spaces
-- Slap and long delays, parallel compression, dry/wet controls, and presets
+- Slap and long delays, parallel compression, a movable boost limiter, dry/wet controls, and editable user presets
 - Optional per-microphone settings
 
 ## Install
@@ -61,6 +61,15 @@ Click the microphone icon to open the rack. Right-click the icon to mute. A lit
 stage in the signal-chain rail is engaged; select one to edit it, or use the
 arrow buttons to move it earlier or later in the chain. Double-click a knob or
 fader to return it to its default.
+
+Channel presets can be used as-is or selected, adjusted, renamed, and updated.
+Saving over a built-in creates a personal override; **Restore** removes that
+override without deleting the factory preset. **Save new** captures the current
+rack as another named preset.
+
+In the Pitch stage, the piano outlines the notes in the selected key and scale.
+Click a piano key to start a custom latch and add or remove allowed notes; use
+**Use key + scale** to clear the custom latch.
 
 For feedback-free monitoring, use headphones before enabling **Mon**.
 

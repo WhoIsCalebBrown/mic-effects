@@ -12,12 +12,15 @@
 // The chain's DEFAULT order is: rumble filter -> hum notch -> voice isolation
 // (spectral denoise) -> noise gate -> auto level (compressor) -> de-esser ->
 // parametric EQ -> auto-tune/pitch/formant -> voice (ring mod / megaphone) ->
-// space (reverb/echo), then volume + limiter, which is always last.
+// space (reverb/echo), then limiter, then the final safety limiter.
 //
 // That order is only a default: MicSettings::chain reorders the stages, because
 // where a compressor sits relative to an EQ is a real decision and not one this
-// file gets to make. Volume and the limiter stay pinned at the end — they are
-// the output, not an insert. Every effect is bypassed
+// file gets to make. Volume and the final safety limiter stay pinned at the
+// output, not in the reorderable list. When the user limiter is the last insert,
+// volume is fed into it so its ceiling is the actual output ceiling; moving the
+// limiter earlier deliberately leaves later inserts and output gain after it.
+// Every effect is bypassed
 // when it is off; volume is the microphone's own gain and applies even with the
 // master switch off, so at 0 dB with nothing on this is a passthrough.
 
@@ -39,7 +42,7 @@ struct EqBand {
 // are one stage: formant is defined as an offset from pitch, so splitting them
 // would let the chain express a formant shift that compensates for a pitch
 // change that has not happened yet.
-enum MicStage { StHpf, StHum, StNr, StGate, StComp, StDeEss, StEq, StPitch, StFx, StVerb, StCount };
+enum MicStage { StHpf, StHum, StNr, StGate, StComp, StDeEss, StEq, StPitch, StFx, StVerb, StLimit, StCount };
 
 struct MicSettings {
   bool enabled = true;                 // master switch; off = plain mic (volume still applies)
@@ -48,13 +51,22 @@ struct MicSettings {
   bool noiseGate = false;              // silence between sentences
   float noiseGateIntensity = 0.55f;    // 0 = barely closes, 1 = aggressive
   bool autoLevel = false;              // compressor + makeup gain: even loudness
-  float autoLevelIntensity = 0.6f;
+  float autoLevelIntensity = 0.6f;     // legacy combined control; migrated when read
+  float autoLevelRatio = 0.6f;         // 0..1 mapped to 2:1 .. 6:1
+  float autoLevelThreshold = 0.6f;     // 0..1 mapped to -14 .. -32 dBFS
   bool glueComp = false;               // second, gentler compressor after the main pass
   float glueCompIntensity = 0.4f;
   bool deEsser = false;                // tames "s" and "t" without dulling the rest
   float deEsserIntensity = 0.5f;
   bool highPass = true;                // 80 Hz rumble/handling filter
   bool humFilter = false;              // narrow notches on mains hum (50/60 Hz and harmonics)
+  // A fast peak limiter which can also add clean level before its ceiling.
+  // The three controls are normalized for the panel: +0..18 dB boost,
+  // -12..0 dBFS ceiling, and 20..300 ms gain-reduction release.
+  bool limiter = false;
+  float limiterBoost = 1.f / 3.f;
+  float limiterCeiling = 11.f / 12.f;
+  float limiterRelease = 3.f / 14.f;
   float volume = 0.5f;                 // 0..1 mapped to -18..+18 dB (0.5 = 0 dB); always applied
   // Bands run in the order given. Eight is the cap: past that the popup cannot
   // show them and nobody is EQing a webcam microphone with nine.
@@ -110,13 +122,20 @@ struct MicSettings {
   float autoTuneAmount = 1.0f;         // how far towards the note: 0 = none, 1 = all the way
   std::string autoTuneKey = "c";       // root the scale is built on, one of keyNames()
   std::string autoTuneScale = "chromatic";  // which notes are allowed, one of scaleNames()
+  // Optional absolute pitch classes. A non-empty set overrides key + scale,
+  // allowing correction to be latched to one note (in any octave) or a small
+  // hand-picked group.
+  std::vector<std::string> autoTuneNotes;
 
   bool operator==(const MicSettings& o) const {
     return enabled == o.enabled && voiceIsolation == o.voiceIsolation && voiceIsolationIntensity == o.voiceIsolationIntensity &&
            noiseGate == o.noiseGate && noiseGateIntensity == o.noiseGateIntensity && autoLevel == o.autoLevel &&
-           autoLevelIntensity == o.autoLevelIntensity && glueComp == o.glueComp && glueCompIntensity == o.glueCompIntensity &&
+           autoLevelIntensity == o.autoLevelIntensity && autoLevelRatio == o.autoLevelRatio &&
+           autoLevelThreshold == o.autoLevelThreshold && glueComp == o.glueComp && glueCompIntensity == o.glueCompIntensity &&
            deEsser == o.deEsser && deEsserIntensity == o.deEsserIntensity &&
-           highPass == o.highPass && humFilter == o.humFilter && volume == o.volume &&
+           highPass == o.highPass && humFilter == o.humFilter && limiter == o.limiter &&
+           limiterBoost == o.limiterBoost && limiterCeiling == o.limiterCeiling &&
+           limiterRelease == o.limiterRelease && volume == o.volume &&
            eq == o.eq && chain == o.chain && voice == o.voice && space == o.space &&
            tape == o.tape && ringMod == o.ringMod && megaphone == o.megaphone &&
            tapeMix == o.tapeMix && ringModMix == o.ringModMix && megaphoneMix == o.megaphoneMix &&
@@ -130,7 +149,7 @@ struct MicSettings {
            spaceDiffusion == o.spaceDiffusion && spaceLowCut == o.spaceLowCut &&
            spaceModRate == o.spaceModRate && spaceModDepth == o.spaceModDepth &&
            autoTune == o.autoTune && autoTuneSpeed == o.autoTuneSpeed && autoTuneAmount == o.autoTuneAmount &&
-           autoTuneKey == o.autoTuneKey && autoTuneScale == o.autoTuneScale;
+           autoTuneKey == o.autoTuneKey && autoTuneScale == o.autoTuneScale && autoTuneNotes == o.autoTuneNotes;
   }
   bool operator!=(const MicSettings& o) const { return !(*this == o); }
   // Valid values ("none" first in each).
@@ -392,6 +411,9 @@ private:
   float gainNow_ = 1;            // and the glided value actually applied
   float gainCoef_ = 1;
   bool gainPrimed_ = false;
+  float limiterBoostGain_ = 1, limiterCeilingGain_ = 1, limiterReleaseCoef_ = 1;
+  float limiterBoostNow_ = 1, limiterMix_ = 0, limiterTransitionCoef_ = 1;
+  float limiterGain_ = 1;        // gain reduction; attack is instantaneous, release glides
   // Scratch for the dry side of a blend. Sized once, never on the audio thread;
   // a block bigger than this simply runs without its mix rather than allocating
   // inside the callback.

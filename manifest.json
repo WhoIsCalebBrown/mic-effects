@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "whoiscalebbrown.mic-effects",
   "name": "Microphone Effects",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "WhoIsCalebBrown",
   "license": "MIT",
   "description": "A standalone system-wide virtual microphone and console-style effects rack: noise reduction, dynamics, parametric EQ, pitch correction, voice effects, delays, and reverb.",

@@ -13,7 +13,7 @@ import "Presets.js" as Presets
 // the top and never scroll, because those are what a call needs. Under them a
 // rail of stage modules is both the status display (a lit LED means engaged)
 // and the selector, and only the stage you pick opens below it. Ten stages and
-// their forty-odd controls therefore cost the height of one stage, not ten.
+// their controls therefore cost the height of one stage, not the whole rack.
 Panel {
   id: root
   moduleName: "whoiscalebbrown.mic-effects"
@@ -43,6 +43,11 @@ Panel {
   readonly property color dim: Qt.darker(fg, 1.45)
   readonly property color eng: Qt.darker(fg, 1.9)      // engraved caps: quieter than dim
   readonly property color accent: Color.popups.border
+  // Dropdowns overlap the rack below them, so their surface must be opaque
+  // even when the active theme gives the main popup a translucent background.
+  readonly property color menuSurface: Qt.rgba(Color.popups.background.r,
+                                                Color.popups.background.g,
+                                                Color.popups.background.b, 1)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property int rowH: Style.spacing.popupRowHeight
   readonly property int inset: Style.space(11)
@@ -55,12 +60,12 @@ Panel {
   property string stage: "comp"          // which unit is open
   readonly property var stageLabels: ({
     hpf: "HPF", hum: "HUM", nr: "NR", gate: "GATE", comp: "COMP",
-    deess: "DE-S", eq: "EQ", pitch: "PITCH", fx: "FX", verb: "VERB"
+    deess: "DE-S", eq: "EQ", pitch: "PITCH", fx: "FX", verb: "VERB", limit: "LIMIT"
   })
   readonly property var stageTitles: ({
     hpf: "HIGH-PASS FILTER", hum: "HUM NOTCH", nr: "NOISE REDUCTION", gate: "GATE",
     comp: "COMPRESSOR", deess: "DE-ESSER", eq: "EQ", pitch: "PITCH",
-    fx: "VOICE FX", verb: "REVERB & DELAY SENDS"
+    fx: "VOICE FX", verb: "REVERB & DELAY SENDS", limit: "LIMITER / LEVEL"
   })
   function stageOn(id) {
     var s = m
@@ -75,6 +80,7 @@ Panel {
     if (id === "pitch") return !!(s.autoTune || s.pitch || s.formant || s.doubler)
     if (id === "fx") return !!(s.tape || s.ringMod || s.megaphone)
     if (id === "verb") return !!((s.space && s.space !== "none") || s.slapDelay || s.longDelay)
+    if (id === "limit") return !!s.limiter
     return false
   }
   readonly property int engagedCount: {
@@ -82,6 +88,7 @@ Panel {
     for (var i = 0; i < chain.length; i++) if (stageOn(chain[i])) n++
     return n
   }
+  property bool routingExpanded: false
 
   // ---- helpers -----------------------------------------------------------
   function db(v) { return (v > 0 ? "+" : "") + v.toFixed(1) }
@@ -96,6 +103,9 @@ Panel {
   function compRatio(t) { return 2 + 4 * t }
   function compThresholdDb(t) { return -14 - 18 * t }
   function retuneMs(t) { return 200 * Math.pow(0.01, t) }
+  function limiterBoostDb(t) { return 18 * t }
+  function limiterCeilingDb(t) { return -12 + 12 * t }
+  function limiterReleaseMs(t) { return 20 + 280 * t }
   function num(key, fallback) { var v = m ? m[key] : undefined; return v === undefined ? fallback : v }
   function set(key, value) { if (svc) svc.setSetting(key, value) }
   function sourceLabel(source) {
@@ -120,6 +130,80 @@ Panel {
     var patch = { voice: "none" }  // clears the pre-independent legacy selector
     patch[key] = on
     svc.setSettings(patch)
+  }
+  property var tuneNoteSelection: m.autoTuneNotes ? m.autoTuneNotes.slice() : []
+  property string tuneKeySelection: m.autoTuneKey || "c"
+  property string tuneScaleSelection: m.autoTuneScale || "chromatic"
+  property bool tuneNotesPending: false
+  readonly property string tuneNotesKey: JSON.stringify(m.autoTuneNotes || [])
+  readonly property string tuneKeyState: m.autoTuneKey || "c"
+  readonly property string tuneScaleState: m.autoTuneScale || "chromatic"
+  onTuneKeyStateChanged: tuneKeySelection = tuneKeyState
+  onTuneScaleStateChanged: tuneScaleSelection = tuneScaleState
+  onTuneNotesKeyChanged: {
+    var incoming = m.autoTuneNotes ? m.autoTuneNotes.slice() : []
+    if (tuneNotesPending && JSON.stringify(incoming) !== JSON.stringify(tuneNoteSelection)) return
+    tuneNoteSelection = incoming
+    tuneNotesPending = false
+    tuneNotesSyncTimeout.stop()
+  }
+  Timer {
+    id: tuneNotesSyncTimeout
+    interval: 1000
+    onTriggered: {
+      root.tuneNotesPending = false
+      root.tuneNoteSelection = root.m.autoTuneNotes ? root.m.autoTuneNotes.slice() : []
+    }
+  }
+  function tuneScaleNotes() {
+    var notes = svc && svc.tuneKeyOptions.length ? svc.tuneKeyOptions : ["c","c#","d","d#","e","f","f#","g","g#","a","a#","b"]
+    var scale = tuneScaleSelection
+    var steps = scale === "major" ? [0,2,4,5,7,9,11]
+              : scale === "minor" ? [0,2,3,5,7,8,10]
+              : scale === "pentatonic" ? [0,2,4,7,9]
+              : scale === "blues" ? [0,3,5,6,7,10]
+              : [0,1,2,3,4,5,6,7,8,9,10,11]
+    var rootIndex = notes.indexOf(tuneKeySelection)
+    if (rootIndex < 0) rootIndex = 0
+    var out = []
+    for (var i = 0; i < steps.length; i++) out.push(notes[(rootIndex + steps[i]) % 12])
+    return out
+  }
+  function tuneNoteInScale(note) { return tuneScaleNotes().indexOf(note) >= 0 }
+  function tuneNoteAllowed(note) {
+    return (tuneNoteSelection.length ? tuneNoteSelection : tuneScaleNotes()).indexOf(note) >= 0
+  }
+  function setTuneSelection(notes) {
+    tuneNoteSelection = notes
+    tuneNotesPending = true
+    tuneNotesSyncTimeout.restart()
+  }
+  function toggleTuneNote(note) {
+    if (!svc) return
+    // Empty means "follow the scale". The first edit starts from that scale,
+    // so clicking an outlined key removes it while clicking another adds it.
+    var notes = tuneNoteSelection.length ? tuneNoteSelection.slice() : tuneScaleNotes()
+    var at = notes.indexOf(note)
+    if (at < 0) notes.push(note); else notes.splice(at, 1)
+    setTuneSelection(notes)
+    root.set("autoTuneNotes", notes)
+  }
+  function useTuneScale() {
+    if (!svc) return
+    setTuneSelection([])
+    root.set("autoTuneNotes", [])
+  }
+  function setTuneScale(scale) {
+    if (!svc) return
+    tuneScaleSelection = scale
+    setTuneSelection([])
+    svc.setSettings({ autoTuneScale: scale, autoTuneNotes: [] })
+  }
+  function setTuneKey(key) {
+    if (!svc) return
+    tuneKeySelection = key
+    setTuneSelection([])
+    svc.setSettings({ autoTuneKey: key, autoTuneNotes: [] })
   }
   function spaceLabel(key) {
     if (key === "none") return "Off"
@@ -271,6 +355,63 @@ Panel {
   // ---- presets ----------------------------------------------------------
   readonly property var eqPresets: Presets.eq
   readonly property var micPresets: Presets.mic
+  readonly property var userPresets: svc ? svc.userPresets : []
+  readonly property var channelPresets: {
+    var out = [], used = ({})
+    for (var i = 0; i < micPresets.length; i++) {
+      var factory = micPresets[i], override = null
+      for (var j = 0; j < userPresets.length; j++)
+        if (userPresets[j].key === factory.key) { override = userPresets[j]; break }
+      out.push({ key: factory.key, label: override ? override.name : factory.label,
+                 user: !!override, builtin: true, settings: override ? override.settings : null,
+                 factory: factory })
+      used[factory.key] = true
+    }
+    for (var k = 0; k < userPresets.length; k++) {
+      var custom = userPresets[k]
+      if (!used[custom.key]) out.push({ key: custom.key, label: custom.name, user: true,
+                                       builtin: false, settings: custom.settings, factory: null })
+    }
+    return out
+  }
+  property string selectedMicPresetKey: ""
+  property string presetNameDraft: "My preset"
+  property bool presetEditorOpen: false
+  property string presetEditMode: "new"
+  function channelPreset(key) {
+    for (var i = 0; i < channelPresets.length; i++) if (channelPresets[i].key === key) return channelPresets[i]
+    return null
+  }
+  function channelPresetIndex() {
+    for (var i = 0; i < channelPresets.length; i++)
+      if (channelPresets[i].key === selectedMicPresetKey) return i
+    return -1
+  }
+  function openPresetEditor(mode) {
+    presetEditMode = mode
+    var selected = channelPreset(selectedMicPresetKey)
+    if (mode === "rename" && selected) presetNameDraft = selected.label
+    else if (mode === "new") presetNameDraft = selected ? selected.label + " copy" : "My preset"
+    presetEditorOpen = true
+    presetMenu.close()
+  }
+  function commitPresetEditor() {
+    if (!presetNameDraft.trim().length) return
+    if (presetEditMode === "rename") {
+      if (!svc || !selectedPresetIsUser()) return
+      svc.renameUserPreset(selectedMicPresetKey, presetNameDraft.trim())
+    }
+    else saveNewPreset()
+    presetEditorOpen = false
+  }
+  function factoryPreset(key) {
+    for (var i = 0; i < micPresets.length; i++) if (micPresets[i].key === key) return micPresets[i]
+    return null
+  }
+  function selectedPresetIsUser() {
+    var preset = channelPreset(selectedMicPresetKey)
+    return !!preset && preset.user
+  }
   // Space buttons are starting points, not a mode switch. Each one sets the
   // algorithm plus a sensible physical shape, then the knobs stay yours.
   readonly property var reverbPresets: ({
@@ -321,12 +462,14 @@ Panel {
     return {
       voiceIsolation: false, voiceIsolationIntensity: 0.6,
       noiseGate: false, noiseGateIntensity: 0.55,
-      autoLevel: false, autoLevelIntensity: 0.6, glueComp: false, glueCompIntensity: 0.4,
+      autoLevel: false, autoLevelIntensity: 0.6, autoLevelRatio: 0.6, autoLevelThreshold: 0.6,
+      glueComp: false, glueCompIntensity: 0.4,
+      limiter: false, limiterBoost: 1 / 3, limiterCeiling: 11 / 12, limiterRelease: 3 / 14,
       deEsser: false, deEsserIntensity: 0.5, highPass: true, humFilter: false,
       chain: [], voice: "none", tape: false, tapeMix: 0.45, ringMod: false, ringModMix: 1.0, megaphone: false, megaphoneMix: 1.0,
-      // The song key is a user choice, not a channel-preset choice.  Keep it
-      // when changing presets; Tuned Trap below selects a useful scale but
-      // never silently changes the root note they chose for the song.
+      // The song key and any latched notes are user choices, not channel-preset
+      // choices. Keep them when changing presets; Tuned Trap below selects a
+      // useful scale but never changes the notes they chose for the song.
       autoTune: false, autoTuneSpeed: 0.5, autoTuneAmount: 1.0,
       pitch: 0, formant: 0, doubler: false, doublerMix: 0.35, compMix: 1.0, pitchMix: 1.0,
       space: "none", spaceSize: 0.5, spaceDecay: 0.5, spaceTone: 0.5, spacePreDelay: 0, spaceDiffusion: 0.5, spaceLowCut: 0, spaceModRate: 0.5, spaceModDepth: 0, spaceMix: 1.0,
@@ -336,9 +479,24 @@ Panel {
   }
   function applyMicPreset(key) {
     if (!svc) return
+    var chosen = channelPreset(key)
+    if (!chosen) return
+    selectedMicPresetKey = key
+    presetNameDraft = chosen.label
+    if (chosen.user) {
+      setTuneSelection(chosen.settings.autoTuneNotes ? chosen.settings.autoTuneNotes.slice() : [])
+      tuneKeySelection = chosen.settings.autoTuneKey || "c"
+      tuneScaleSelection = chosen.settings.autoTuneScale || "chromatic"
+      svc.setSettings(chosen.settings)
+      eqSel = 0
+      return
+    }
+    applyFactoryMicPreset(chosen.factory)
+  }
+  function applyFactoryMicPreset(preset) {
+    if (!svc || !preset) return
     for (var i = 0; i < micPresets.length; i++) {
-      var preset = micPresets[i]
-      if (preset.key !== key) continue
+      if (micPresets[i].key !== preset.key) continue
       var patch = micPresetBase()
       for (var setting in preset.set) if (setting !== "eqPreset") patch[setting] = preset.set[setting]
       var bands = eqPresetBands(preset.set.eqPreset) || []
@@ -346,9 +504,41 @@ Panel {
       for (var j = 0; j < bands.length; j++)
         patch.eq.push({ on: true, type: bands[j].type, freq: bands[j].freq, gain: bands[j].gain, q: bands[j].q })
       patch.enabled = true
+      if (patch.autoTuneScale !== undefined) tuneScaleSelection = patch.autoTuneScale
       svc.setSettings(patch)
       eqSel = 0
       return
+    }
+  }
+  function saveSelectedPreset() {
+    if (!svc || !selectedMicPresetKey) return
+    var name = presetNameDraft.trim()
+    if (!name.length) return
+    svc.saveUserPreset(selectedMicPresetKey, name)
+  }
+  function saveNewPreset() {
+    if (!svc) return
+    var name = presetNameDraft.trim()
+    if (!name.length) name = "My preset"
+    var key = "user-" + Date.now()
+    selectedMicPresetKey = key
+    presetNameDraft = name
+    svc.saveUserPreset(key, name)
+  }
+  function removeSelectedPreset() {
+    if (!svc || !selectedPresetIsUser()) return
+    var preset = channelPreset(selectedMicPresetKey)
+    var wasBuiltin = preset && preset.builtin
+    svc.deleteUserPreset(selectedMicPresetKey)
+    if (wasBuiltin) {
+      var factory = factoryPreset(selectedMicPresetKey)
+      if (factory) {
+        presetNameDraft = factory.label
+        applyFactoryMicPreset(factory)
+      }
+    } else {
+      selectedMicPresetKey = ""
+      presetNameDraft = "My preset"
     }
   }
   function applyReverbPreset(kind) {
@@ -627,6 +817,40 @@ Panel {
     }
   }
 
+  // A single octave is enough because the tuner works in pitch classes: C is
+  // allowed in every octave. Outlined keys belong to the chosen key/scale;
+  // filled keys are the notes the corrector can currently land on.
+  component PianoKey: Rectangle {
+    id: pk
+    property string note: "c"
+    property bool accidental: false
+    property bool guide: false
+    property bool on: false
+    signal picked()
+    radius: Style.space(2)
+    color: on ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, accidental ? 0.72 : 0.42)
+              : accidental ? Qt.rgba(0.02, 0.02, 0.02, 0.94)
+                           : Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.09)
+    border.width: guide ? 2 : 1
+    border.color: on ? Qt.lighter(root.accent, 1.25)
+                      : guide ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.72)
+                              : Qt.rgba(root.fg.r, root.fg.g, root.fg.b, accidental ? 0.22 : 0.14)
+    SafeText {
+      anchors.horizontalCenter: parent.horizontalCenter
+      anchors.bottom: parent.bottom
+      anchors.bottomMargin: Style.space(4)
+      text: pk.note.toUpperCase()
+      color: pk.on || pk.accidental ? root.fg : root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+    }
+    MouseArea {
+      anchors.fill: parent
+      cursorShape: Qt.PointingHandCursor
+      onClicked: pk.picked()
+    }
+  }
+
   // ---- the EQ ------------------------------------------------------------
   readonly property var eqBands: (m && m.eq) ? m.eq : []
   property int eqSel: 0
@@ -768,17 +992,17 @@ Panel {
         spacing: Style.space(4)
         Knob {
           label: "Ratio"; defaultValue: 0.6
-          value: root.num("autoLevelIntensity", 0.6)
+          value: root.num("autoLevelRatio", root.num("autoLevelIntensity", 0.6))
           readout: root.compRatio(live).toFixed(1) + ":1"
           inputMin: 2; inputMax: 6; inputDecimals: 1; inputUnit: ":1"
-          onReleased: function(v) { root.set("autoLevelIntensity", v) }
+          onReleased: function(v) { root.set("autoLevelRatio", v) }
         }
         Knob {
-          label: "Thresh"
-          value: root.num("autoLevelIntensity", 0.6)
+          label: "Thresh"; defaultValue: 0.6
+          value: root.num("autoLevelThreshold", root.num("autoLevelIntensity", 0.6))
           readout: Math.round(root.compThresholdDb(live)) + " dB"
           inputMin: -14; inputMax: -32; inputUnit: "dB"
-          onReleased: function(v) { root.set("autoLevelIntensity", v) }
+          onReleased: function(v) { root.set("autoLevelThreshold", v) }
         }
         Knob {
           label: "Mix"; defaultValue: 1.0
@@ -798,6 +1022,40 @@ Panel {
         }
       }
       Eng { text: "Main catches peaks; Glue holds the vocal in the mix"; tracking: 0.06 }
+    }
+  }
+  Component {
+    id: limiterUnit
+    Column {
+      spacing: Style.space(8)
+      Push { text: "Engage"; on: !!root.m.limiter; enabled: !!root.svc
+             onClicked: root.set("limiter", !root.m.limiter) }
+      Row {
+        anchors.horizontalCenter: parent.horizontalCenter
+        spacing: Style.space(4)
+        Knob {
+          label: "Boost"; defaultValue: 1 / 3
+          value: root.num("limiterBoost", 1 / 3)
+          readout: root.db(root.limiterBoostDb(live)) + " dB"
+          inputMin: 0; inputMax: 18; inputDecimals: 1; inputUnit: "dB"
+          onReleased: function(v) { root.set("limiterBoost", v) }
+        }
+        Knob {
+          label: "Ceiling"; defaultValue: 11 / 12
+          value: root.num("limiterCeiling", 11 / 12)
+          readout: root.db(root.limiterCeilingDb(live)) + " dB"
+          inputMin: -12; inputMax: 0; inputDecimals: 1; inputUnit: "dB"
+          onReleased: function(v) { root.set("limiterCeiling", v) }
+        }
+        Knob {
+          label: "Release"; defaultValue: 3 / 14
+          value: root.num("limiterRelease", 3 / 14)
+          readout: Math.round(root.limiterReleaseMs(live)) + " ms"
+          inputMin: 20; inputMax: 300; inputUnit: "ms"
+          onReleased: function(v) { root.set("limiterRelease", v) }
+        }
+      }
+      Eng { text: "At chain end, Ceiling limits final level · move left for creative limiting"; tracking: 0.05 }
     }
   }
   Component {
@@ -1049,26 +1307,86 @@ Panel {
           delegate: Push {
             required property var modelData
             text: modelData
-            on: (root.m.autoTuneScale || "chromatic") === modelData
+            on: root.tuneScaleSelection === modelData
             enabled: !!root.svc
-            onClicked: root.set("autoTuneScale", modelData)
+            onClicked: root.setTuneScale(modelData)
           }
         }
       }
-      Eng { visible: !!root.m.autoTune; text: "Set the song key — chromatic does not snap notes"; tracking: 0.05 }
+      Eng { visible: !!root.m.autoTune; text: "Key and scale outline the piano notes in tune"; tracking: 0.05 }
       Flow {
         width: parent.width
         spacing: Style.space(4)
-        visible: !!root.m.autoTune && (root.m.autoTuneScale || "chromatic") !== "chromatic"
+        visible: !!root.m.autoTune
         Repeater {
           model: root.svc ? root.svc.tuneKeyOptions : []
           delegate: Push {
             required property var modelData
             text: modelData
-            on: (root.m.autoTuneKey || "c") === modelData
+            on: root.tuneKeySelection === modelData
             enabled: !!root.svc
-            onClicked: root.set("autoTuneKey", modelData)
+            onClicked: root.setTuneKey(modelData)
           }
+        }
+      }
+      Item {
+        width: parent.width
+        height: Style.space(86)
+        visible: !!root.m.autoTune
+        Row {
+          id: whiteKeys
+          anchors.fill: parent
+          spacing: Style.space(1)
+          Repeater {
+            model: ["c", "d", "e", "f", "g", "a", "b"]
+            delegate: PianoKey {
+              required property var modelData
+              note: modelData
+              accidental: false
+              guide: root.tuneNoteInScale(note)
+              on: root.tuneNoteAllowed(note)
+              width: (whiteKeys.width - whiteKeys.spacing * 6) / 7
+              height: whiteKeys.height
+              onPicked: root.toggleTuneNote(note)
+            }
+          }
+        }
+        Repeater {
+          model: [{ note: "c#", at: 1 }, { note: "d#", at: 2 }, { note: "f#", at: 4 },
+                  { note: "g#", at: 5 }, { note: "a#", at: 6 }]
+          delegate: PianoKey {
+            required property var modelData
+            readonly property real whiteWidth: parent.width / 7
+            note: modelData.note
+            accidental: true
+            guide: root.tuneNoteInScale(note)
+            on: root.tuneNoteAllowed(note)
+            width: whiteWidth * 0.58
+            height: parent.height * 0.62
+            x: modelData.at * whiteWidth - width / 2
+            z: 2
+            onPicked: root.toggleTuneNote(note)
+          }
+        }
+      }
+      Row {
+        width: parent.width
+        visible: !!root.m.autoTune
+        spacing: Style.space(6)
+        Eng {
+          width: parent.width - useScale.width - parent.spacing
+          anchors.verticalCenter: parent.verticalCenter
+          text: root.tuneNoteSelection.length
+                ? "Custom latch · " + root.tuneNoteSelection.length + " notes enabled"
+                : "Following " + root.tuneKeySelection.toUpperCase() + " " + root.tuneScaleSelection
+          tracking: 0.05
+        }
+        Push {
+          id: useScale
+          text: "Use key + scale"
+          visible: root.tuneNoteSelection.length > 0
+          enabled: !!root.svc
+          onClicked: root.useTuneScale()
         }
       }
     }
@@ -1329,8 +1647,40 @@ Panel {
 
           // -- routing ---------------------------------------------------
           RackUnit {
-            Eng { text: "INPUT / VIRTUAL OUTPUT"; tracking: 0.16 }
+            pad: Style.space(6)
+            Item {
+              width: parent.width
+              height: root.rowH
+              Row {
+                anchors.fill: parent
+                spacing: Style.space(7)
+                Eng { text: "Route"; width: Style.space(42); anchors.verticalCenter: parent.verticalCenter }
+                SafeText {
+                  width: parent.width - Style.space(42) - routeToggle.width - parent.spacing * 2
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: root.sourceLabel(root.svc ? root.svc.source : null)
+                        + "  →  " + (root.svc ? root.svc.outputLabel : "Microphone Effects")
+                  color: root.fg
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  elide: Text.ElideMiddle
+                }
+                Eng {
+                  id: routeToggle
+                  width: Style.space(16)
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: root.routingExpanded ? "⌃" : "⌄"
+                  color: root.dim
+                }
+              }
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.routingExpanded = !root.routingExpanded
+              }
+            }
             Row {
+              visible: root.routingExpanded
               width: parent.width
               height: root.rowH
               spacing: Style.space(8)
@@ -1369,6 +1719,7 @@ Panel {
                 }
                 delegate: ItemDelegate {
                   required property var modelData
+                  required property int index
                   width: inputPick.width
                   height: root.rowH
                   contentItem: SafeText {
@@ -1396,14 +1747,15 @@ Panel {
                     ScrollIndicator.vertical: ScrollIndicator { }
                   }
                   background: Rectangle {
-                    color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.10)
+                    color: root.menuSurface
                     border.width: 1
-                    border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.24)
+                    border.color: root.accent
                   }
                 }
               }
             }
             Row {
+              visible: root.routingExpanded
               width: parent.width
               height: root.rowH
               spacing: Style.space(8)
@@ -1433,11 +1785,16 @@ Panel {
                 }
               }
             }
-            Eng { text: "Changing the output name reconnects it for a moment"; tracking: 0.04 }
+            Eng {
+              visible: root.routingExpanded
+              text: "Changing the output name reconnects it for a moment"
+              tracking: 0.04
+            }
           }
 
           // -- meters ----------------------------------------------------
           RackUnit {
+            pad: Style.space(6)
             Row {
               spacing: Style.space(9)
               Eng { text: "In"; width: Style.space(24); anchors.verticalCenter: parent.verticalCenter }
@@ -1449,23 +1806,6 @@ Panel {
               Eng { text: "Out"; width: Style.space(24); anchors.verticalCenter: parent.verticalCenter }
               SegMeter { level: root.svc ? Math.sqrt(root.svc.outLevel) : 0; anchors.verticalCenter: parent.verticalCenter }
               Eng { text: root.svc ? root.dbfs(root.svc.outLevel) : "—"; anchors.verticalCenter: parent.verticalCenter }
-            }
-            Item {
-              width: parent.width
-              height: Style.space(10)
-              Row {
-                x: Style.space(33)
-                width: parent.width - x
-                Repeater {
-                  model: ["-40", "-20", "-12", "-6", "0", "+3"]
-                  delegate: Item {
-                    required property var modelData
-                    width: (parent.width) / 6
-                    height: Style.space(10)
-                    Eng { text: modelData; tracking: 0.08; font.pixelSize: Style.font.caption }
-                  }
-                }
-              }
             }
           }
 
@@ -1508,24 +1848,195 @@ Panel {
 
           // -- channel presets -------------------------------------------
           RackUnit {
-            Item {
+            id: presetRack
+            pad: Style.space(6)
+            Row {
               width: parent.width
-              height: Style.space(12)
-              Eng { text: "Channel presets"; anchors.verticalCenter: parent.verticalCenter }
-              Eng { text: "restores a complete starting point"; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; tracking: 0.05 }
-            }
-            Flow {
-              width: parent.width
-              spacing: Style.space(4)
-              Repeater {
-                model: root.micPresets
-                delegate: Push {
+              height: root.rowH
+              spacing: Style.space(5)
+              Eng { text: "Preset"; width: Style.space(48); anchors.verticalCenter: parent.verticalCenter }
+              ComboBox {
+                id: presetPick
+                width: parent.width - Style.space(48) - presetSave.width - presetMore.width - parent.spacing * 3
+                height: parent.height
+                enabled: !!root.svc
+                model: root.channelPresets
+                textRole: "label"
+                currentIndex: root.channelPresetIndex()
+                onActivated: function(index) {
+                  if (index >= 0 && index < root.channelPresets.length)
+                    root.applyMicPreset(root.channelPresets[index].key)
+                }
+                contentItem: SafeText {
+                  leftPadding: Style.space(7)
+                  rightPadding: Style.space(20)
+                  verticalAlignment: Text.AlignVCenter
+                  text: presetPick.currentIndex >= 0 ? presetPick.displayText : "Custom settings"
+                  color: root.fg
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  elide: Text.ElideRight
+                }
+                indicator: SafeText {
+                  x: presetPick.width - width - Style.space(7)
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: "⌄"
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                }
+                background: Rectangle {
+                  color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.055)
+                  border.width: 1
+                  border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, presetPick.activeFocus ? 0.44 : 0.17)
+                }
+                delegate: ItemDelegate {
                   required property var modelData
-                  text: modelData.label
-                  enabled: !!root.svc
-                  onClicked: root.applyMicPreset(modelData.key)
+                  required property int index
+                  width: presetPick.width
+                  height: root.rowH
+                  contentItem: SafeText {
+                    leftPadding: Style.space(7)
+                    verticalAlignment: Text.AlignVCenter
+                    text: modelData.label
+                    color: root.fg
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                    elide: Text.ElideRight
+                  }
+                  highlighted: presetPick.highlightedIndex === index
+                  background: Rectangle {
+                    color: parent.highlighted ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18) : "transparent"
+                  }
+                }
+                popup: Popup {
+                  y: presetPick.height
+                  width: presetPick.width
+                  implicitHeight: contentItem.implicitHeight
+                  padding: 1
+                  contentItem: ListView {
+                    clip: true
+                    implicitHeight: Math.min(contentHeight, root.rowH * 7)
+                    model: presetPick.popup.visible ? presetPick.delegateModel : null
+                    currentIndex: presetPick.highlightedIndex
+                    ScrollIndicator.vertical: ScrollIndicator { }
+                  }
+                  background: Rectangle {
+                    color: root.menuSurface
+                    border.width: 1
+                    border.color: root.accent
+                  }
                 }
               }
+              Push {
+                id: presetSave
+                height: parent.height
+                text: root.selectedPresetIsUser() ? "Save" : "Save as"
+                enabled: !!root.svc
+                onClicked: {
+                  if (root.selectedPresetIsUser()) root.saveSelectedPreset()
+                  else root.openPresetEditor("new")
+                }
+              }
+              Push {
+                id: presetMore
+                width: root.rowH
+                height: parent.height
+                text: "•••"
+                enabled: !!root.svc
+                onClicked: presetMenu.open()
+              }
+            }
+
+            Popup {
+              id: presetMenu
+              x: presetRack.width - width - root.inset
+              y: root.rowH
+              width: Style.space(126)
+              padding: Style.space(4)
+              closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+              contentItem: Column {
+                spacing: Style.space(4)
+                Push {
+                  width: parent.width
+                  text: "Save as new…"
+                  onClicked: root.openPresetEditor("new")
+                }
+                Push {
+                  width: parent.width
+                  text: "Rename…"
+                  enabled: root.selectedPresetIsUser()
+                  onClicked: root.openPresetEditor("rename")
+                }
+                Push {
+                  width: parent.width
+                  text: {
+                    var preset = root.channelPreset(root.selectedMicPresetKey)
+                    return preset && preset.builtin ? "Restore built-in" : "Delete preset"
+                  }
+                  hot: true
+                  enabled: root.selectedPresetIsUser()
+                  onClicked: {
+                    root.removeSelectedPreset()
+                    presetMenu.close()
+                  }
+                }
+              }
+              background: Rectangle {
+                color: root.menuSurface
+                border.width: 1
+                border.color: root.accent
+              }
+            }
+
+            Row {
+              visible: root.presetEditorOpen
+              width: parent.width
+              height: root.rowH
+              spacing: Style.space(5)
+              Rectangle {
+                width: parent.width - presetCommit.width - presetCancel.width - parent.spacing * 2
+                height: parent.height
+                color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.055)
+                border.width: 1
+                border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, presetName.activeFocus ? 0.44 : 0.17)
+                TextInput {
+                  id: presetName
+                  anchors.fill: parent
+                  anchors.leftMargin: Style.space(7)
+                  anchors.rightMargin: Style.space(7)
+                  verticalAlignment: TextInput.AlignVCenter
+                  color: root.fg
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  selectByMouse: true
+                  maximumLength: 40
+                  text: root.presetNameDraft
+                  onTextEdited: root.presetNameDraft = text
+                  Keys.onReturnPressed: root.commitPresetEditor()
+                  Keys.onEscapePressed: root.presetEditorOpen = false
+                }
+              }
+              Push {
+                id: presetCommit
+                height: parent.height
+                text: root.presetEditMode === "rename" ? "Rename" : "Create"
+                enabled: !!root.svc && root.presetNameDraft.trim().length > 0
+                onClicked: root.commitPresetEditor()
+              }
+              Push {
+                id: presetCancel
+                width: root.rowH
+                height: parent.height
+                text: "×"
+                onClicked: root.presetEditorOpen = false
+              }
+            }
+            Eng {
+              visible: !!root.svc && root.svc.commandError.length > 0
+              text: root.svc ? root.svc.commandError : ""
+              color: "#de9562"
+              tracking: 0.04
             }
           }
 
@@ -1600,6 +2111,7 @@ Panel {
               sourceComponent: root.stage === "eq" ? eqUnit
                              : root.stage === "pitch" ? pitchUnit
                              : root.stage === "comp" ? compUnit
+                             : root.stage === "limit" ? limiterUnit
                              : root.stage === "gate" ? gateUnit
                              : root.stage === "nr" ? nrUnit
                              : root.stage === "deess" ? deessUnit

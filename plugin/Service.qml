@@ -9,6 +9,7 @@ Item {
   property var manifest: null
 
   property var state: ({})
+  property string commandError: ""
   readonly property bool connected: sockConnected
   readonly property var mic: state.mic || ({})
   readonly property var settings: mic.settings || ({})
@@ -28,12 +29,15 @@ Item {
   readonly property real outLevel: mic.outLevel || 0
   readonly property int rate: mic.rate || 48000
   readonly property string status: mic.status || ""
-  readonly property var stageOptions: mic.stages || ["hpf","hum","nr","gate","comp","deess","eq","pitch","fx","verb"]
+  readonly property var stageOptions: mic.stages || ["hpf","hum","nr","gate","comp","deess","eq","pitch","fx","verb","limit"]
   readonly property var eqTypeOptions: mic.eqTypes || ["bell","lowshelf","highshelf","highpass","lowpass","notch"]
   readonly property var voiceOptions: mic.voices || ["none","ringmod","megaphone"]
   readonly property var spaceOptions: mic.spaces || ["none","room","hall","cathedral","echo","underwater"]
   readonly property var tuneKeyOptions: mic.tuneKeys || []
   readonly property var tuneScaleOptions: mic.tuneScales || []
+  // Entries are { key, name, settings }. They include custom replacements for
+  // built-in panel presets, so callers can merge by key.
+  readonly property var userPresets: mic.userPresets || []
   readonly property var chain: {
     var current = settings.chain
     return (current && current.length) ? current : stageOptions
@@ -41,6 +45,7 @@ Item {
 
   function send(obj) {
     if (!sockConnected) return false
+    commandError = ""
     sock.write(JSON.stringify(obj) + "\n")
     sock.flush()
     return true
@@ -56,6 +61,13 @@ Item {
   function setSameForAll(value) { return setMic({ sameForAll: !!value }) }
   function reset() { return send({ cmd: "micreset" }) }
   function refresh() { return send({ cmd: "get" }) }
+  function saveUserPreset(key, name) {
+    return send({ cmd: "presetSave", key: key, name: name })
+  }
+  function renameUserPreset(key, name) {
+    return send({ cmd: "presetRename", key: key, name: name })
+  }
+  function deleteUserPreset(key) { return send({ cmd: "presetDelete", key: key }) }
 
   function moveStage(stageId, delta) {
     var current = chain.slice()
@@ -162,7 +174,7 @@ Item {
             if (message && message.type === "state") {
               root.state = message
               root.setMeter(!!(message.mic && message.mic.active), "consumer")
-            }
+            } else if (message && message.type === "error") root.commandError = String(message.error || "Command failed")
           } catch (error) {}
         }
       }
