@@ -355,8 +355,11 @@ Panel {
   // ---- presets ----------------------------------------------------------
   readonly property var eqPresets: Presets.eq
   readonly property var micPresets: Presets.mic
-  readonly property var userPresets: svc ? svc.userPresets : []
+  // Meter updates replace the service's state object several times per second.
+  // Keep the ComboBox model stable unless the saved presets actually change.
+  readonly property string userPresetsKey: JSON.stringify(svc ? svc.userPresets : [])
   readonly property var channelPresets: {
+    var userPresets = JSON.parse(userPresetsKey)
     var out = [], used = ({})
     for (var i = 0; i < micPresets.length; i++) {
       var factory = micPresets[i], override = null
