@@ -19,7 +19,15 @@ Panel {
   moduleName: "whoiscalebbrown.mic-effects"
   ipcTarget: "whoiscalebbrown.mic-effects"
 
-  readonly property var svc: bar && bar.shell ? bar.shell.serviceFor("whoiscalebbrown.mic-effects") : null
+  // Stock bar: serviceFor() returns the keepLoaded Service. Third-party bars
+  // may not expose services to widgets; use ctl.sock in that case.
+  readonly property var hostedSvc: bar && bar.shell && typeof bar.shell.serviceFor === "function"
+    ? bar.shell.serviceFor("whoiscalebbrown.mic-effects") : null
+  readonly property var svc: hostedSvc || bridge
+  DaemonBridge {
+    id: bridge
+    bridgeActive: !root.hostedSvc
+  }
   readonly property var m: svc ? svc.settings : ({})
   readonly property bool connected: svc ? svc.connected : false
   readonly property bool muted: svc ? svc.muted : false
