@@ -3,6 +3,7 @@ import QtQuick.Controls
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "Presets.js" as Presets
 
@@ -39,15 +40,15 @@ Panel {
   function toggle() { opened ? userClose() : open() }
 
   // ---- palette -----------------------------------------------------------
-  readonly property color fg: bar ? bar.foreground : Color.foreground
+  readonly property color fg: bar ? bar.foreground : Commons.Color.foreground
   readonly property color dim: Qt.darker(fg, 1.45)
   readonly property color eng: Qt.darker(fg, 1.9)      // engraved caps: quieter than dim
-  readonly property color accent: Color.popups.border
+  readonly property color accent: Commons.Color.popups.border
   // Dropdowns overlap the rack below them, so their surface must be opaque
   // even when the active theme gives the main popup a translucent background.
-  readonly property color menuSurface: Qt.rgba(Color.popups.background.r,
-                                                Color.popups.background.g,
-                                                Color.popups.background.b, 1)
+  readonly property color menuSurface: Qt.rgba(Commons.Color.popups.background.r,
+                                                Commons.Color.popups.background.g,
+                                                Commons.Color.popups.background.b, 1)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property int rowH: Style.spacing.popupRowHeight
   readonly property int inset: Style.space(11)
@@ -1568,7 +1569,7 @@ Panel {
     text: root.muted ? "" : ""
     active: root.muted || root.live
     useActiveColor: true
-    activeColor: root.muted ? Color.urgent : root.fg
+    activeColor: root.muted ? Commons.Color.urgent : root.fg
     tooltipText: (!root.connected && root.svc && root.svc.setupError ? root.svc.setupError
                 : root.muted ? "Microphone muted"
                 : root.live ? "Microphone in use"
