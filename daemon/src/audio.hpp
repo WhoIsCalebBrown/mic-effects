@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "audio_ring.hpp"
 #include "mic.hpp"
 
 struct pw_thread_loop;
@@ -66,6 +67,7 @@ public:
   float inLevel() const { return capturing_.load() ? proc_.inLevel() : 0.f; }
   float outLevel() const { return capturing_.load() ? proc_.outLevel() : 0.f; }
   int rate() const { return rate_.load(); }
+  uint64_t playbackUnderrunSamples() const { return ring_.underrunSamples(sourceReader_); }
   static const char* kNodeName;      // node.name of the virtual microphone
 
 private:
@@ -82,8 +84,6 @@ private:
   void onPlaybackProcess();
   void onListenProcess();
   void onListenState(int old, int state, const char* error);
-  // One reader's share of the ring: fills out[0..n), zero-padding an underrun.
-  int readRing(std::atomic<unsigned>& rp, float* out, int n);
   void onCaptureParam(unsigned id, const void* param);
   void onPlaybackParam(unsigned id, const void* param);
   void onCaptureState(int old, int state, const char* error);
@@ -138,8 +138,7 @@ private:
   // takes. Each reader (the source apps see, and the listen stream, which
   // follows the sink's clock instead) keeps its own read index; the writer
   // never moves them, it only appends.
-  static constexpr int kRing = 1 << 15;
-  std::vector<float> ring_;
-  std::atomic<unsigned> rw_{0}, rr_{0}, rl_{0};
+  AudioRing ring_;
+  AudioRing::Reader sourceReader_, listenReader_;
   std::vector<float> work_;           // de-interleaved / scratch block
 };

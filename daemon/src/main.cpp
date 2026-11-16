@@ -446,6 +446,7 @@ class Daemon {
                 {"active", audio_.active()}, {"consumers", audio_.consumers()}, {"capturing", audio_.capturing()},
                 {"muted", config_.muted}, {"listen", config_.listen}, {"listening", audio_.listening()},
                 {"inLevel", audio_.inLevel()}, {"outLevel", audio_.outLevel()}, {"rate", audio_.rate()},
+                {"playbackUnderrunSamples", audio_.playbackUnderrunSamples()},
                 {"hideAll", hidden_.all}, {"sameForAll", config_.sameForAll},
                 {"settings", settingsToJson(effectiveSettings())}, {"eqTypes", MicSettings::eqTypeNames()},
                 {"stages", MicSettings::stageNames()}, {"voices", MicSettings::voiceNames()},

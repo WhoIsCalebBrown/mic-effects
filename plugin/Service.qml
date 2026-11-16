@@ -2,7 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 
-// Owns the local PipeWire/DSP daemon and mirrors its microphone state.
+// Starts or adopts the local PipeWire/DSP daemon and mirrors its state.
 Item {
   id: root
   property var shell: null
@@ -121,8 +121,12 @@ Item {
     id: install
     command: ["sh", "-c", 'mkdir -p "$2"; cd "$1" && ./install.sh >"$2/install.log" 2>&1', "mic-effects-install", root.repoDir, root.cacheDir]
     onExited: function(code) {
-      if (code === 0) { root.installed = true; root.setupError = ""; restartTimer.restart() }
-      else root.setupError = "Microphone Effects build failed. See " + root.installLog
+      if (code === 0) {
+        root.installed = true
+        root.setupError = ""
+        if (daemon.running) daemon.signal(15)
+        else restartTimer.restart()
+      } else root.setupError = "Microphone Effects build failed. See " + root.installLog
     }
   }
   Process {
@@ -142,7 +146,9 @@ Item {
       }
     }
     onExited: function(code) {
-      root.state = ({})
+      // A shell reload can leave the previous daemon alive. Its socket owns
+      // our state even if this launch lost the instance lock (exit code 3).
+      if (root.sockConnected) return
       root.restarts += 1
       restartTimer.interval = code === 3 ? 3000 : Math.min(10000, 800 + root.restarts * 800)
       restartTimer.restart()
@@ -153,9 +159,9 @@ Item {
     interval: 500
     repeat: false
     onTriggered: {
-      if (!root.installed || install.running) return
-      if (daemon.running) daemon.signal(15)
-      else { daemon.command = [root.daemonBinary, "run"]; daemon.running = true }
+      if (!root.installed || install.running || root.sockConnected || daemon.running) return
+      daemon.command = [root.daemonBinary, "run"]
+      daemon.running = true
     }
   }
   Timer { interval: 60000; running: daemon.running; repeat: false; onTriggered: root.restarts = 0 }
@@ -180,8 +186,15 @@ Item {
       }
       onConnectionStateChanged: {
         root.sockConnectedChanged()
-        if (connected && root.meterWanted) root.send({ cmd: "micpreview", on: true })
-        if (!connected) { root.state = ({}); reconnect.restart() }
+        if (connected) {
+          restartTimer.stop()
+          if (root.meterWanted) root.send({ cmd: "micpreview", on: true })
+        } else {
+          root.state = ({})
+          reconnect.restart()
+          // An adopted daemon has no Process exit signal in this shell.
+          if (root.installed && !daemon.running && !install.running) restartTimer.restart()
+        }
       }
       onError: function(error) { reconnect.restart() }
     }
