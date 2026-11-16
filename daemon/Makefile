@@ -10,6 +10,18 @@ BIN := $(BUILD)/mic-effects-server
 
 all: $(BIN)
 
+test: $(BUILD)/tst_pitch_bypass $(BUILD)/tst_audio_ring
+	$(BUILD)/tst_pitch_bypass
+	$(BUILD)/tst_audio_ring
+
+$(BUILD)/tst_audio_ring: ../tests/tst_audio_ring.cpp src/audio_ring.hpp
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) -o $@ ../tests/tst_audio_ring.cpp
+
+$(BUILD)/tst_pitch_bypass: ../tests/tst_pitch_bypass.cpp src/mic.cpp src/mic.hpp
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) -o $@ ../tests/tst_pitch_bypass.cpp src/mic.cpp
+
 $(BIN): $(OBJ)
 	$(CXX) -o $@ $^ $(LDFLAGS)
 
@@ -20,4 +32,4 @@ $(BUILD)/%.o: src/%.cpp src/*.hpp
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all clean
+.PHONY: all clean test

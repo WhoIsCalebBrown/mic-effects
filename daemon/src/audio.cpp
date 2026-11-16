@@ -102,9 +102,10 @@ bool AudioEngine::startImpl(const std::string& label, std::string* err) {
   stop();
   label_ = label;
   failed_ = false;
-  ring_.assign(kRing, 0.f);
+  ring_.reset();
   work_.assign(1 << 14, 0.f);
-  rw_ = rr_ = rl_ = 0;
+  ring_.arm(sourceReader_);
+  ring_.arm(listenReader_);
   pw_init(nullptr, nullptr);
   loop_ = pw_thread_loop_new("mic-effects-audio", nullptr);
   if (!loop_) { if (err) *err = "pw_thread_loop_new failed"; return false; }
@@ -244,7 +245,7 @@ void AudioEngine::closeCapture() {
 // "Listen to this microphone": a plain playback stream on the default sink fed
 // from the same ring the virtual source reads. It is deliberately not in the
 // mic link group — it follows the speakers' clock, not the microphone's — so a
-// little drift is absorbed by the ring (see readRing).
+// little drift is absorbed by the ring.
 bool AudioEngine::openListen(std::string* err) {
   if (listen_) return true;
   pw_properties* props = pw_properties_new(
@@ -266,11 +267,10 @@ bool AudioEngine::openListen(std::string* err) {
   info.channels = 1;
   info.position[0] = SPA_AUDIO_CHANNEL_MONO;
   const spa_pod* params[1] = { spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &info) };
-  // Start just behind the write head: at the live edge every cycle in which
-  // the sink runs before the microphone underruns and clicks. This has to
-  // happen before connect(), while no callback can be reading it yet.
-  unsigned w = rw_.load();
-  rl_.store(w - std::min(w, 960u));
+  // Arm before connect(), while no callback can be reading it yet. The reader
+  // waits for a complete block plus a small pre-roll, so callback ordering
+  // cannot turn the beginning of monitoring into alternating audio and zeros.
+  ring_.arm(listenReader_);
   listenLost_ = false;     // (see closeListen: our own teardown must not look like a loss)
   int r = pw_stream_connect(listen_, PW_DIRECTION_OUTPUT, PW_ID_ANY,
                             (pw_stream_flags)(PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS | PW_STREAM_FLAG_RT_PROCESS),
@@ -387,6 +387,7 @@ std::string AudioEngine::maintain(double now) {
     { std::lock_guard<std::mutex> lk(mu_); cur = currentSource_; }
     fprintf(stderr, "mic-effects-server: microphone open (%s)\n", cur.empty() ? "default source" : cur.c_str());
   }
+
   // Bluetooth: hold the headset profile open for as long as we read that mic.
   std::string bt;
   if (capture_) {
@@ -515,6 +516,7 @@ void AudioEngine::onGlobalRemove(unsigned id) {
 // real microphone ended up feeding us — with "Default" selected that is the
 // only way to name it.
 void AudioEngine::updateLinks() {
+  int previous = consumers_.load(std::memory_order_relaxed);
   int n = 0;
   std::string feeding;
   for (auto& [id, l] : links_) {
@@ -526,6 +528,10 @@ void AudioEngine::updateLinks() {
   }
   consumers_ = n;
   active_ = n > 0;
+  // A source stream is present even with no consumers, and its callback can
+  // begin before maintain() has opened capture. Re-arm on the first link so it
+  // deliberately prebuffers instead of exposing those scheduling gaps.
+  if (previous == 0 && n > 0) ring_.arm(sourceReader_);
   if (!feeding.empty()) currentSource_ = feeding;
 }
 
@@ -627,34 +633,12 @@ void AudioEngine::onCaptureProcess() {
         wasMuted_ = false;
         proc_.process(work_.data(), n);
       }
-      // Append only: each reader trims its own backlog (readRing), so a reader
+      // Append only: each reader trims its own backlog, so a reader
       // that is not being called cannot drag the other one back.
-      unsigned w = rw_.load(std::memory_order_relaxed);
-      for (int i = 0; i < n; i++) ring_[(w + i) & (kRing - 1)] = work_[i];
-      rw_.store(w + (unsigned)n, std::memory_order_release);
+      ring_.write(work_.data(), n);
     }
   }
   pw_stream_queue_buffer(capture_, pb);
-}
-
-// Real-time: one reader's share of what the capture side left; returns how
-// many samples it actually filled (never more than the ring can serve). A reader that
-// falls more than half a ring behind (nothing linked to it for a while, or the
-// speakers' clock running slower than the microphone's) is snapped back to the
-// live edge rather than allowed to play further and further into the past.
-int AudioEngine::readRing(std::atomic<unsigned>& rp, float* out, int n) {
-  if (n <= 0) return 0;
-  if (n > kRing / 4) n = kRing / 4;   // a quantum that big cannot be served from history
-  unsigned w = rw_.load(std::memory_order_acquire);
-  unsigned r = rp.load(std::memory_order_relaxed);
-  int avail = (int)(w - r);
-  if (avail < 0) { r = w; avail = 0; }                                  // capture restarted
-  if (avail > kRing / 2) { r = w - (unsigned)n; avail = n; }
-  int take = std::min(n, avail);
-  for (int i = 0; i < take; i++) out[i] = ring_[(r + i) & (kRing - 1)];
-  for (int i = take; i < n; i++) out[i] = 0.f;   // mic not open (or not there yet): silence
-  rp.store(r + (unsigned)take, std::memory_order_release);
-  return n;
 }
 
 // Real-time: fill the block apps read, from whatever the capture side left.
@@ -667,7 +651,12 @@ void AudioEngine::onPlaybackProcess() {
   int n = d.data ? (int)(d.maxsize / stride) : 0;
   if (pb->requested > 0) n = std::min<int>(n, (int)pb->requested);
   if (d.chunk) {
-    n = readRing(rr_, (float*)d.data, n);   // the reader clamps; the chunk must say so
+    n = ring_.read(sourceReader_, (float*)d.data, n, true);  // the reader clamps; the chunk must say so
+    const bool muted = muted_.load();
+    // Master mute gates the published source immediately while maintain()
+    // tears down the capture streams. Reading above still advances the rings,
+    // so unmuting cannot replay audio buffered before the mute.
+    if (muted && n > 0) std::fill((float*)d.data, (float*)d.data + n, 0.f);
     d.chunk->offset = 0;
     d.chunk->stride = stride;
     d.chunk->size = std::max(0, n) * stride;
@@ -685,7 +674,7 @@ void AudioEngine::onListenProcess() {
   int n = d.data ? (int)(d.maxsize / stride) : 0;
   if (pb->requested > 0) n = std::min<int>(n, (int)pb->requested);
   if (d.chunk) {
-    n = readRing(rl_, (float*)d.data, n);
+    n = ring_.read(listenReader_, (float*)d.data, n, false);
     d.chunk->offset = 0;
     d.chunk->stride = stride;
     d.chunk->size = std::max(0, n) * stride;

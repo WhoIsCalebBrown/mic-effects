@@ -47,15 +47,9 @@ if not ok then
 end
 log:info ("hide-mics: all=" .. tostring (hide_all))
 
-local hidden = {}      -- bound-id -> node.name
--- Hiding only ever applies while the replacement exists. WirePlumber runs from
--- login; the daemon that publishes "mic-effects" only starts with the
--- shell, and it can crash or be uninstalled without this file going with it.
--- Withholding the permission until our node is actually there turns "no
--- microphone at all" into "the real ones are visible for a few seconds".
-local ours = false
-
 local clients_om = ObjectManager { Interest { type = "client" } }
+local nodes_om = ObjectManager { Interest { type = "node" } }
+local hidden = {} -- bound-id -> object.serial for the microphones hidden last time
 
 local function should_hide (node)
   local props = node.properties
@@ -76,64 +70,51 @@ local function allowed (client)
   return false
 end
 
-local function apply (client)
-  if allowed (client) then return end
-  local perms = {}
-  local any = false
-  for id, _ in pairs (hidden) do perms [id] = ours and "-" or "rwxm"; any = true end
-  if any then client:update_permissions (perms) end
-end
-
-local function apply_all ()
-  for client in clients_om:iterate { type = "client" } do apply (client) end
-end
-
--- The node-added *event* (rather than the object manager's signal) is what
--- WirePlumber's own software-dsp script hooks to hide a hardware node: by then
--- the node is bound and has the global id the permission refers to.
-SimpleEventHook {
-  name = "mic-effects/hide-mics",
-  interests = {
-    EventInterest {
-      Constraint { "event.type", "=", "node-added" },
-    },
-  },
-  execute = function (event)
-    local node = event:get_subject ()
-    local name = node.properties ["node.name"] or ""
-    if not should_hide (node) then return end
-    local ok, id = pcall (function () return node ["bound-id"] end)
-    if not ok or id == nil then return end
-    hidden [id] = name
-    log:info ("hiding microphone " .. tostring (name))
-    apply_all ()
-  end
-}:register ()
-
--- Whether "Microphone Effects" exists is checked once a second against an
--- object manager. The obvious routes do not work: a node on its way out is
--- already unbound (the node-removed event carries no usable identity, and
--- asking only logs a warning), and the object manager's own object-removed
--- signal was measured never to fire for this node. A one-second poll of a
--- lookup is dull and it is right.
-local nodes_om = ObjectManager { Interest { type = "node" } }
-nodes_om:activate ()
-
-local function check_ours ()
-  local found = nodes_om:lookup {
+-- PipeWire clears a client's per-global permissions when that global is
+-- destroyed. A later global may reuse the id, even with the same node.name.
+-- Only restore a microphone if the very same global is still present.
+local function reconcile (new_client)
+  local ours = nodes_om:lookup {
     Constraint { "node.name", "=", "mic-effects", type = "pw-global" },
   } ~= nil
-  if found == ours then return end
-  ours = found
-  log:info (ours and "hide-mics: Microphone Effects is up, hiding the real microphones"
-                  or "hide-mics: Microphone Effects is gone, unhiding the real microphones")
-  apply_all ()
+  local next_hidden, changes, all_denies = {}, {}, {}
+  for node in nodes_om:iterate { type = "node" } do
+    if should_hide (node) then
+      local id = node ["bound-id"]
+      -- An unbound proxy's id is PW_ID_ANY, the wildcard in permissions.
+      if id ~= nil and id >= 0 and id < 0xffffffff then
+        local serial = node.properties ["object.serial"] or node
+        if ours then
+          next_hidden [id] = serial
+          all_denies [id] = "-"
+          if hidden [id] ~= serial then changes [id] = "-" end
+        elseif hidden [id] == serial then
+          changes [id] = "rwxm"
+        end
+      end
+    end
+  end
+  hidden = next_hidden
+  if next (changes) then
+    for client in clients_om:iterate { type = "client" } do
+      if client ~= new_client and not allowed (client) then
+        client:update_permissions (changes)
+      end
+    end
+  end
+  if new_client and next (all_denies) and not allowed (new_client) then
+    new_client:update_permissions (all_denies)
+  end
 end
-Core.timeout_add (1000, function ()
-  check_ours ()
-  return true   -- keep repeating
-end)
 
--- A client that connects later must not see them either.
-clients_om:connect ("object-added", function (om, client) apply (client) end)
+-- The object manager enumerates existing nodes during activation as well as
+-- future additions. Reconcile periodically too, since a departing proxy may
+-- already be unbound when WirePlumber delivers the removal notification.
+nodes_om:connect ("object-added", function () reconcile () end)
+clients_om:connect ("object-added", function (_, client) reconcile (client) end)
+nodes_om:activate ()
 clients_om:activate ()
+Core.timeout_add (1000, function ()
+  reconcile ()
+  return true
+end)

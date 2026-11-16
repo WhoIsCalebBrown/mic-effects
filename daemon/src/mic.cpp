@@ -823,12 +823,29 @@ void MicProcessor::setSettings(const MicSettings& s) {
   // step of the drag. Space and voice are gone from this list entirely:
   // Space::configure already zeroes its own delay lines, and the voice stage
   // holds nothing but biquads.
-  auto pitchRuns = [](const MicSettings& m) { return m.autoTune || m.pitch != 0; };
+  auto pitchRuns = [](const MicSettings& m) {
+    return (m.autoTune && m.autoTuneAmount > 0.f) || m.pitch != 0;
+  };
   auto formantRuns = [](const MicSettings& m) { return m.formant != m.pitch; };
+  const bool pitchRunChanged = pitchRuns(s) != pitchRuns(s_);
+  const bool formantRunChanged = formantRuns(s) != formantRuns(s_);
   bool tailChanged = s.enabled != s_.enabled ||
-                     s.voiceIsolation != s_.voiceIsolation ||
-                     pitchRuns(s) != pitchRuns(s_) ||
-                     formantRuns(s) != formantRuns(s_);
+                     s.voiceIsolation != s_.voiceIsolation;
+  // Starting or stopping a pitch stage must discard that stage's buffered
+  // audio without erasing independent reverb and delay tails.
+  if (pitchRunChanged) {
+    tracker_.reset();
+    corrector_.reset();
+    tuneRatio_ = 1.f;
+    tunePeriod_ = 0.f;
+  }
+  if (formantRunChanged) formant_.reset();
+  // A fixed pitch shift can keep the shifter running when correction is
+  // switched off. Do not let the old correction glide into that fixed shift.
+  if (!s.autoTune || s.autoTuneAmount <= 0.f) tuneRatio_ = 1.f;
+  // The aux holds its own audio and freezes while bypassed, just like the
+  // shifter. Clear it without resetting the rest of an active lead chain.
+  if (s.doubler != s_.doubler) doubler_.reset();
   s_ = s;
   dirty_ = true;
   if (spaceChanged) space_.configure(s_.space, s_.spaceSize, s_.spaceDecay,
@@ -1146,7 +1163,8 @@ void MicProcessor::process(float* x, int n) {
         break;
       }
       case StPitch: {
-        const bool wantPitch = s_.autoTune || pitchRatio_ != 1.f;
+        const bool wantTune = s_.autoTune && tuneAmount_ > 0.f;
+        const bool wantPitch = wantTune || pitchRatio_ != 1.f;
         const bool wantFormant = std::fabs(formantRatio_ - 1.f) > 1e-3f;
         const bool wantDoubler = s_.doubler;
         // One capture around both, so the blend is against the voice as it went in
@@ -1160,7 +1178,7 @@ void MicProcessor::process(float* x, int n) {
           // audible even when the pitch it reports is right.
           if (p > 0) tunePeriod_ = tunePeriod_ > 0 ? mixf(tunePeriod_, p, 0.35f) : p;
           float want = 1.f;
-          if (s_.autoTune && p > 0 && tunePeriod_ > 0) {
+          if (wantTune && p > 0 && tunePeriod_ > 0) {
             const float f = (float)rate_ / tunePeriod_;
             // ^amount travels that fraction of the distance to the note; the clamp is
             // the seatbelt for the octave error the detector will make eventually.
@@ -1173,13 +1191,16 @@ void MicProcessor::process(float* x, int n) {
           // Glide once per block, so the correction slides into the note — and back
           // to 1 through an unvoiced consonant — instead of stepping.
           const float c = 1.f - std::exp(-(float)n / std::max(1.f, tuneTau_ * rate_));
-          tuneRatio_ += c * (want - tuneRatio_);
+          if (wantTune) tuneRatio_ += c * (want - tuneRatio_);
+          else tuneRatio_ = 1.f;
           // An unvoiced stretch has no period to splice on. Auto-tune wants to stop
           // there — its correction has already glided back to 1 — but a fixed Pitch
           // does not: a consonant that jumps back to its original octave is worse
           // than one spliced on a stale period, so hold the last one.
           const float per = tunePeriod_ > 0 ? tunePeriod_ : (float)rate_ / 150.f;
-          corrector_.process(x, n, per, wantPitch ? tuneRatio_ * pitchRatio_ : 1.f);
+          // A doubler only needs the tracker for its aux. Leave the lead
+          // untouched unless correction or a fixed pitch shift is requested.
+          if (wantPitch) corrector_.process(x, n, per, tuneRatio_ * pitchRatio_);
         }
         if (wantFormant) {
           formant_.setRatio(formantRatio_);
